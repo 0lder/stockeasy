@@ -10,6 +10,7 @@ pywencai 便捷查询工具
 """
 
 import sys
+import json
 import argparse
 import pandas as pd
 import pywencai
@@ -134,6 +135,7 @@ def main():
     parser.add_argument("--raw", action="store_true", help="原始格式输出")
     parser.add_argument("--save", action="store_true", help="保存为 CSV (自动命名)")
     parser.add_argument("--csv", type=str, help="保存为 CSV (指定路径)")
+    parser.add_argument("--json", action="store_true", help="JSON 格式输出 (供 API 调用)")
     parser.add_argument("-i", "--interactive", action="store_true", help="交互模式")
 
     args = parser.parse_args()
@@ -141,6 +143,28 @@ def main():
     if args.interactive or not args.query:
         interactive_mode()
         return
+
+    if args.json:
+        # JSON 输出模式 — 供后端 API 调用
+        import warnings
+        warnings.filterwarnings("ignore")
+        try:
+            df = pywencai.get(query=args.query, loop=True)
+            if df is None:
+                print(json.dumps({"error": "没有查到数据", "data": []}))
+                sys.exit(0)
+            if isinstance(df, dict):
+                output = {}
+                for key, sub_df in df.items():
+                    output[key] = json.loads(sub_df.to_json(orient="records", force_ascii=False))
+                print(json.dumps(output, ensure_ascii=False))
+            elif isinstance(df, pd.DataFrame):
+                print(json.dumps(json.loads(df.to_json(orient="records", force_ascii=False)), ensure_ascii=False))
+            else:
+                print(json.dumps({"error": f"未知返回类型: {type(df)}", "data": []}))
+        except Exception as e:
+            print(json.dumps({"error": str(e), "data": []}))
+        sys.exit(0)
 
     result = query_wencai(args.query, limit=args.limit, raw=args.raw)
     
