@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import { queryWencai } from "./wencai.js";
+import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory } from "./database.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,7 +21,10 @@ if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
 }
 
-// API: query wencai (纯 Node.js, 无需 Python)
+// ============================================================
+// API: Query
+// ============================================================
+
 app.get("/api/query", async (req, res) => {
   const query = (req.query.q as string || "").trim();
   if (!query) {
@@ -31,16 +35,25 @@ app.get("/api/query", async (req, res) => {
 
   console.log(`[query] "${query}" (limit=${limit})`);
 
+  const startTime = Date.now();
+
   try {
-    const startTime = Date.now();
     const result = await queryWencai(query, limit);
     const elapsed = Date.now() - startTime;
 
     console.log(`[query] Done in ${elapsed}ms, ${result.total} results`);
 
+    // 记录到历史
+    recordQuery(query, result.total, "success", undefined, elapsed);
+
     res.json(result);
   } catch (error: any) {
+    const elapsed = Date.now() - startTime;
     console.error(`[query] Failed: "${query}"`, error.message);
+
+    // 记录失败历史
+    recordQuery(query, 0, "error", error.message, elapsed);
+
     res.status(500).json({
       success: false,
       error: "查询失败",
@@ -50,12 +63,60 @@ app.get("/api/query", async (req, res) => {
   }
 });
 
-// Health check
+// ============================================================
+// API: Query History
+// ============================================================
+
+// 获取历史记录
+app.get("/api/history", (req, res) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const pageSize = parseInt(req.query.pageSize as string) || 20;
+
+  try {
+    const result = getQueryHistory(page, pageSize);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: "获取历史记录失败", detail: error.message });
+  }
+});
+
+// 删除单条历史
+app.delete("/api/history/:id", (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) {
+    return res.status(400).json({ error: "无效的 ID" });
+  }
+
+  try {
+    deleteQueryHistory(id);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: "删除失败", detail: error.message });
+  }
+});
+
+// 清空全部历史
+app.delete("/api/history", (_req, res) => {
+  try {
+    clearQueryHistory();
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: "清空失败", detail: error.message });
+  }
+});
+
+// ============================================================
+// Health
+// ============================================================
+
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Fallback to index.html for SPA
+// ============================================================
+// SPA fallback
+// ============================================================
+
 app.get("*", (_req, res) => {
   const indexHtml = path.resolve(clientDist, "index.html");
   if (fs.existsSync(indexHtml)) {
@@ -65,7 +126,19 @@ app.get("*", (_req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 StockEasy server running at http://localhost:${PORT}`);
-  console.log(`📡 纯 Node.js 引擎, 无需 Python 依赖`);
-});
+// ============================================================
+// Start
+// ============================================================
+
+async function start() {
+  // 初始化数据库
+  await initDatabase();
+
+  app.listen(PORT, () => {
+    console.log(`🚀 StockEasy server running at http://localhost:${PORT}`);
+    console.log(`📡 纯 Node.js 引擎, 无需 Python 依赖`);
+    console.log(`📦 SQLite 查询历史已启用`);
+  });
+}
+
+start();

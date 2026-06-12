@@ -1,4 +1,4 @@
-import { useState, FormEvent, useCallback } from "react";
+import { useState, FormEvent, useCallback, useEffect } from "react";
 import "./App.css";
 
 interface StockItem {
@@ -22,6 +22,23 @@ interface QueryResult {
   data: StockItem[];
 }
 
+interface HistoryRecord {
+  id: number;
+  query: string;
+  result_count: number;
+  status: string;
+  error_msg: string | null;
+  elapsed_ms: number | null;
+  created_at: string;
+}
+
+interface HistoryResponse {
+  records: HistoryRecord[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 const SUGGESTIONS = [
   "上证指数",
   "北向资金流向",
@@ -38,17 +55,46 @@ export default function App() {
   const [error, setError] = useState("");
   const [columns, setColumns] = useState<string[]>([]);
 
-  const handleSearch = useCallback(async (e?: FormEvent) => {
-    e?.preventDefault();
-    const q = query.trim();
-    if (!q) return;
+  // History state
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // 加载历史
+  const loadHistory = useCallback(async (page = 1) => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/history?page=${page}&pageSize=20`);
+      const json: HistoryResponse = await res.json();
+      setHistory(json.records);
+      setHistoryTotal(json.total);
+      setHistoryPage(json.page);
+    } catch {
+      // ignore
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  // 打开历史面板时加载
+  useEffect(() => {
+    if (showHistory) {
+      loadHistory(1);
+    }
+  }, [showHistory, loadHistory]);
+
+  const handleSearch = useCallback(async (q?: string) => {
+    const searchQuery = q ?? query.trim();
+    if (!searchQuery) return;
 
     setLoading(true);
     setError("");
     setResult(null);
 
     try {
-      const res = await fetch(`/api/query?q=${encodeURIComponent(q)}&limit=50`);
+      const res = await fetch(`/api/query?q=${encodeURIComponent(searchQuery)}&limit=50`);
       const json = await res.json();
 
       if (!res.ok || json.error) {
@@ -58,13 +104,42 @@ export default function App() {
         if (json.data?.length > 0) {
           setColumns(Object.keys(json.data[0]));
         }
+        // 查完后刷新历史
+        if (showHistory) loadHistory(1);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "网络错误");
     } finally {
       setLoading(false);
     }
-  }, [query]);
+  }, [query, showHistory, loadHistory]);
+
+  const handleFormSubmit = useCallback((e?: FormEvent) => {
+    e?.preventDefault();
+    handleSearch();
+  }, [handleSearch]);
+
+  // 点击历史记录重新查询
+  const handleHistoryClick = useCallback((record: HistoryRecord) => {
+    setQuery(record.query);
+    setShowHistory(false);
+    handleSearch(record.query);
+  }, [handleSearch]);
+
+  // 删除单条历史
+  const handleDeleteHistory = useCallback(async (id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await fetch(`/api/history/${id}`, { method: "DELETE" });
+    loadHistory(historyPage);
+  }, [loadHistory, historyPage]);
+
+  // 清空历史
+  const handleClearHistory = useCallback(async () => {
+    await fetch("/api/history", { method: "DELETE" });
+    setHistory([]);
+    setHistoryTotal(0);
+    setHistoryPage(1);
+  }, []);
 
   const formatValue = (val: unknown): string => {
     if (val === null || val === undefined) return "—";
@@ -89,10 +164,114 @@ export default function App() {
         <div className="nav-inner">
           <span className="nav-logo">📈 StockEasy</span>
           <span className="nav-subtitle">智能股票查询</span>
+          <div className="nav-right">
+            <button
+              className={`history-btn ${showHistory ? "active" : ""}`}
+              onClick={() => setShowHistory(!showHistory)}
+              title="查询历史"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+              <span className="history-btn-text">历史</span>
+              {historyTotal > 0 && (
+                <span className="history-badge">{historyTotal > 99 ? "99+" : historyTotal}</span>
+              )}
+            </button>
+          </div>
         </div>
       </nav>
 
-      {/* Hero */}
+      {/* History Panel */}
+      {showHistory && (
+        <div className="history-overlay" onClick={() => setShowHistory(false)}>
+          <aside className="history-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="history-header">
+              <h2 className="history-title">查询历史</h2>
+              <div className="history-actions">
+                {history.length > 0 && (
+                  <button className="history-clear-btn" onClick={handleClearHistory}>
+                    清空
+                  </button>
+                )}
+                <button className="history-close-btn" onClick={() => setShowHistory(false)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {historyLoading ? (
+              <div className="history-loading">
+                <div className="loading-bar" />
+                <p>加载中…</p>
+              </div>
+            ) : history.length === 0 ? (
+              <div className="history-empty">
+                <p>暂无查询记录</p>
+                <p className="history-empty-hint">输入关键词搜索后，记录将出现在这里</p>
+              </div>
+            ) : (
+              <div className="history-list">
+                {history.map((record) => (
+                  <div
+                    key={record.id}
+                    className={`history-item ${record.status === "error" ? "error" : ""}`}
+                    onClick={() => handleHistoryClick(record)}
+                  >
+                    <div className="history-item-top">
+                      <span className="history-item-query">{record.query}</span>
+                      <button
+                        className="history-item-del"
+                        onClick={(e) => handleDeleteHistory(record.id, e)}
+                        title="删除"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div className="history-item-meta">
+                      {record.status === "error" ? (
+                        <span className="history-status error">失败</span>
+                      ) : (
+                        <span className="history-status success">{record.result_count} 条</span>
+                      )}
+                      <span className="history-time">{record.created_at}</span>
+                      {record.elapsed_ms != null && (
+                        <span className="history-elapsed">{record.elapsed_ms}ms</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Pagination */}
+            {historyTotal > 20 && (
+              <div className="history-pagination">
+                <button
+                  disabled={historyPage <= 1}
+                  onClick={() => loadHistory(historyPage - 1)}
+                >
+                  上一页
+                </button>
+                <span>{historyPage} / {Math.ceil(historyTotal / 20)}</span>
+                <button
+                  disabled={historyPage >= Math.ceil(historyTotal / 20)}
+                  onClick={() => loadHistory(historyPage + 1)}
+                >
+                  下一页
+                </button>
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
+
+      {/* Hero + Search */}
       <section className="hero">
         <h1 className="hero-title">
           用自然语言查询
@@ -103,8 +282,7 @@ export default function App() {
           问财数据引擎 · 实时行情 · 智能筛选
         </p>
 
-        {/* Search */}
-        <form className="search-form" onSubmit={handleSearch}>
+        <form className="search-form" onSubmit={handleFormSubmit}>
           <div className="search-bar">
             <input
               className="search-input"
@@ -112,7 +290,7 @@ export default function App() {
               placeholder='输入查询，例如 "北向资金流向"'
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              onKeyDown={(e) => e.key === "Enter" && handleFormSubmit()}
             />
             <button
               className="search-btn"
@@ -131,7 +309,6 @@ export default function App() {
           </div>
         </form>
 
-        {/* Suggestions */}
         <div className="suggestions">
           {SUGGESTIONS.map((s) => (
             <button
@@ -139,10 +316,7 @@ export default function App() {
               className="suggestion-chip"
               onClick={() => {
                 setQuery(s);
-                setTimeout(() => {
-                  const form = document.querySelector(".search-form") as HTMLFormElement;
-                  form?.requestSubmit();
-                }, 50);
+                handleSearch(s);
               }}
             >
               {s}
