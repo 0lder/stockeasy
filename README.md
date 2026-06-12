@@ -14,6 +14,7 @@ stockeasy/
 │   ├── src/
 │   │   ├── index.ts              # Express 后端服务入口
 │   │   ├── wencai.ts             # 问财 API 纯 TypeScript 实现 ✨
+│   │   ├── database.ts           # SQLite 查询历史存储 (sql.js)
 │   │   └── hexin-v.bundle.js     # 同花顺令牌生成器 (自包含)
 │   └── package.json
 ├── client/
@@ -21,9 +22,9 @@ stockeasy/
 │   │   ├── App.tsx               # React 主界面 (苹果设计风格)
 │   │   └── App.css
 │   ├── index.html
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── vite.config.ts
+│   └── package.json
+├── data/                         # SQLite 数据库文件 (运行后自动生成)
+├── screenshots/                  # 截图
 └── README.md
 ```
 
@@ -39,6 +40,18 @@ stockeasy/
 | **Step 1** | `POST get-robot-data` — 获取查询条件和 URL 参数 |
 | **Step 2** | `POST getDataList / find` — 拉取实际数据，支持分页 |
 | **结果解析** | 多组件类型处理 (container/tab1/tab4/common 等) |
+
+### SQLite 查询历史 (`server/src/database.ts`)
+
+基于 **sql.js**（纯 JavaScript SQLite 实现，无需 C++ 编译），提供完整的查询历史管理：
+
+| 功能 | API 端点 | 说明 |
+|------|----------|------|
+| **自动记录** | — | 每次查询自动记录（成功/失败），含耗时、结果条数 |
+| **分页查询** | `GET /api/history?page=1&pageSize=20` | 按时间倒序排列 |
+| **删除单条** | `DELETE /api/history/:id` | 移除指定记录 |
+| **清空全部** | `DELETE /api/history` | 重置历史 |
+| **磁盘持久化** | — | 内存 ↔ 磁盘双向同步，每隔 30s 自动保存，退出时保证写入 |
 
 ---
 
@@ -59,9 +72,9 @@ npx tsx src/wencai.ts "涨停股" --limit 5 > result.json
 
 ## 🌐 Web UI 预览
 
-| 首页 | 查询结果 |
-|:---:|:---:|
-| ![首页](screenshots/landing.png) | ![结果](screenshots/results.png) |
+| 首页 | 查询结果 | 历史面板 |
+|:---:|:---:|:---:|
+| ![首页](screenshots/landing.png) | ![结果](screenshots/results.png) | ![历史](screenshots/history_panel.png) |
 
 ### 一键启动
 
@@ -96,6 +109,7 @@ cd client && npm run dev  # → http://localhost:5173
 - **苹果设计风格** — SF 字体、毛玻璃导航、圆角搜索栏、柔和阴影
 - **快捷搜索建议** — 一键点击热门查询
 - **智能表格展示** — 自动识别数值列、对齐格式化
+- **查询历史** — 自动保存、侧滑面板浏览、点击重新查询、单条/批量删除
 - **响应式布局** — 桌面和移动端均适配
 - **实时查询** — 纯 TypeScript 引擎，毫秒级响应
 
@@ -109,6 +123,7 @@ cd client && npm run dev  # → http://localhost:5173
 | 运行时 | tsx (TypeScript 直接执行) |
 | 数据引擎 | **纯 TypeScript 实现**（替代 pywencai） |
 | 反爬令牌 | hexin-v (同花顺签名, 自包含 JS bundle) |
+| 历史存储 | SQLite via sql.js (纯 JS，无需 C++ 编译) |
 | 设计风格 | Apple SF Pro 风格 |
 
 ## 🚀 快速上手
