@@ -57,7 +57,11 @@ npx tsx src/wencai.ts "北向资金流向" --limit 10
 npx tsx src/wencai.ts "涨停股" --limit 5 > result.json
 ```
 
-## 🌐 Web UI 模式
+## 🌐 Web UI 预览
+
+| 首页 | 查询结果 |
+|:---:|:---:|
+| ![首页](screenshots/landing.png) | ![结果](screenshots/results.png) |
 
 ### 一键启动
 
