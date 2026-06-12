@@ -45,6 +45,32 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // 策略表
+  db.run(`
+    CREATE TABLE IF NOT EXISTS strategies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      query_text TEXT NOT NULL,
+      tags TEXT DEFAULT '[]',
+      group_name TEXT DEFAULT '默认',
+      created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+    )
+  `);
+
+  // 自选股表
+  db.run(`
+    CREATE TABLE IF NOT EXISTS watchlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      note TEXT DEFAULT '',
+      group_name TEXT DEFAULT '默认',
+      added_at DATETIME DEFAULT (datetime('now', 'localtime'))
+    )
+  `);
+
   // 保存到磁盘
   saveToDisk();
 
@@ -178,4 +204,132 @@ export function getLatestQuery(): QueryRecord | null {
   }
   stmt.free();
   return record;
+}
+
+// ============================================================
+// Strategies (策略管理)
+// ============================================================
+
+export interface Strategy {
+  id: number;
+  name: string;
+  description: string;
+  query_text: string;
+  tags: string;
+  group_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createStrategy(
+  name: string,
+  queryText: string,
+  description: string = "",
+  tags: string[] = [],
+  groupName: string = "默认"
+): number {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare(`
+    INSERT INTO strategies (name, description, query_text, tags, group_name)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  stmt.run([name, description, queryText, JSON.stringify(tags), groupName]);
+  stmt.free();
+  return (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
+}
+
+export function getStrategies(): Strategy[] {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM strategies ORDER BY updated_at DESC");
+  stmt.bind([]);
+  const rows: Strategy[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  stmt.free();
+  return rows;
+}
+
+export function updateStrategy(id: number, data: { name?: string; description?: string; query_text?: string; tags?: string[]; group_name?: string }): boolean {
+  if (!db) throw new Error("Database not initialized");
+  const fields: string[] = [];
+  const values: any[] = [];
+  if (data.name !== undefined) { fields.push("name = ?"); values.push(data.name); }
+  if (data.description !== undefined) { fields.push("description = ?"); values.push(data.description); }
+  if (data.query_text !== undefined) { fields.push("query_text = ?"); values.push(data.query_text); }
+  if (data.tags !== undefined) { fields.push("tags = ?"); values.push(JSON.stringify(data.tags)); }
+  if (data.group_name !== undefined) { fields.push("group_name = ?"); values.push(data.group_name); }
+  fields.push("updated_at = datetime('now', 'localtime')");
+  values.push(id);
+  db.run(`UPDATE strategies SET ${fields.join(", ")} WHERE id = ?`, values);
+  saveToDisk();
+  return true;
+}
+
+export function deleteStrategy(id: number): boolean {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM strategies WHERE id = ?", [id]);
+  saveToDisk();
+  return true;
+}
+
+// ============================================================
+// Watchlist (自选股)
+// ============================================================
+
+export interface WatchItem {
+  id: number;
+  stock_code: string;
+  stock_name: string;
+  note: string;
+  group_name: string;
+  added_at: string;
+}
+
+export function addToWatchlist(stockCode: string, stockName: string, note: string = "", groupName: string = "默认"): number {
+  if (!db) throw new Error("Database not initialized");
+  // 查重
+  const existing = db.exec("SELECT id FROM watchlist WHERE stock_code = ?", [stockCode]);
+  if (existing.length > 0 && existing[0].values.length > 0) {
+    return existing[0].values[0][0] as number;
+  }
+  const stmt = db.prepare("INSERT INTO watchlist (stock_code, stock_name, note, group_name) VALUES (?, ?, ?, ?)");
+  stmt.run([stockCode, stockName, note, groupName]);
+  stmt.free();
+  saveToDisk();
+  return (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
+}
+
+export function getWatchlist(): WatchItem[] {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM watchlist ORDER BY group_name, added_at DESC");
+  stmt.bind([]);
+  const rows: WatchItem[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  stmt.free();
+  return rows;
+}
+
+export function updateWatchItem(id: number, data: { note?: string; group_name?: string }): boolean {
+  if (!db) throw new Error("Database not initialized");
+  const fields: string[] = [];
+  const values: any[] = [];
+  if (data.note !== undefined) { fields.push("note = ?"); values.push(data.note); }
+  if (data.group_name !== undefined) { fields.push("group_name = ?"); values.push(data.group_name); }
+  if (fields.length === 0) return true;
+  values.push(id);
+  db.run(`UPDATE watchlist SET ${fields.join(", ")} WHERE id = ?`, values);
+  saveToDisk();
+  return true;
+}
+
+export function removeFromWatchlist(id: number): boolean {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM watchlist WHERE id = ?", [id]);
+  saveToDisk();
+  return true;
+}
+
+export function getWatchlistGroups(): string[] {
+  if (!db) throw new Error("Database not initialized");
+  const result = db.exec("SELECT DISTINCT group_name FROM watchlist ORDER BY group_name");
+  return result[0]?.values.map((v: any) => v[0]) || [];
 }
