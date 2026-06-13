@@ -25,6 +25,7 @@ export async function diagnoseStock(
   stockInfo: { code: string; name: string; financials: string; news: string }
 ): Promise<{ score: number; recommendation: string; reason: string }> {
   const prompt = buildPrompt(stockInfo);
+  console.log("[ai] prompt data length:", prompt.length, "financials:", stockInfo.financials.substring(0, 100));
 
   const body = {
     model: config.model,

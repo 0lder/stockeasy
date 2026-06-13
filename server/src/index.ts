@@ -858,43 +858,112 @@ app.post("/api/diagnose/:code", async (req, res) => {
     const baseUrl = getSetting("ai_base_url") || "https://api.openai.com/v1";
     const model = getSetting("ai_model") || "gpt-4o-mini";
 
-    // 2. 并行获取财务数据和新闻
-    const [wcData, newsText] = await Promise.all([
-      queryWencai(`${code} ${name} 最新价 最新涨跌幅 市盈率 市净率 总市值 流通市值 净利润 营业收入 毛利率 净利率 资产负债率 ROE 主营业务 所属行业`, 5),
+    // 2. 并行获取数据: 基础行情 + 财务指标 + 新闻
+    const [priceResult, finResult, newsText] = await Promise.all([
+      queryWencai(`${code} ${name}`, 5),
+      queryWencai(`${name} 一季报 净利润增长率 营业收入 净利润 毛利率 净利率 资产负债率 ROE 每股收益`, 5),
       gatherNews(code, name),
     ]);
 
-    // 3. 整理财务数据
-    let financials = "无详细财务数据";
-    if (wcData.data && wcData.data.length > 0) {
-      const row = wcData.data[0];
-      const fields = [
-        ["最新价", row.最新价],
-        ["涨跌幅", row.最新涨跌幅 != null ? row.最新涨跌幅 + "%" : undefined],
-        ["市盈率(PE)", row.市盈率],
-        ["市净率(PB)", row.市净率],
-        ["总市值", row.总市值],
-        ["流通市值", row.流通市值],
-        ["净利润", row.净利润],
-        ["营业收入", row.营业收入],
-        ["毛利率", row.毛利率],
-        ["净利率", row.净利率],
-        ["资产负债率", row.资产负债率],
-        ["ROE", row.ROE || row.净资产收益率],
-        ["主营业务", row.主营业务],
-        ["所属行业", row.所属行业],
-      ];
-      financials = fields
-        .filter(([, v]) => v !== undefined && v !== null && v !== "")
-        .map(([k, v]) => `${k}: ${v}`)
-        .join("\n");
+    // 3. 整理基础行情
+    const lines: string[] = [];
+    if (priceResult.data && priceResult.data.length > 0) {
+      const row = priceResult.data[0];
+      if (row.股票代码) lines.push(`股票代码: ${row.股票代码}`);
+      if (row.股票简称) lines.push(`股票简称: ${row.股票简称}`);
+      if (row.最新价 && row.最新价 !== "") lines.push(`最新价: ${row.最新价}`);
+      if (row.最新涨跌幅 && row.最新涨跌幅 !== "") lines.push(`最新涨跌幅: ${(row.最新涨跌幅 as number).toFixed(2)}%`);
     }
 
-    // 4. 调用 AI 诊断
+    // 4. 从财务查询提取指标
+    if (finResult.data && finResult.data.length > 0) {
+      let extractedCount = 0;
+      for (const row of finResult.data) {
+        for (const key of Object.keys(row)) {
+          const val = row[key];
+          if (Array.isArray(val)) {
+            for (const item of val) {
+              if (typeof item === "object" && item !== null) {
+                let itemCode = "";
+                let reportPeriod = "";
+                const extracted: Record<string, string> = {};
+                
+                for (const mk of Object.keys(item)) {
+                  const cleanKey = mk.replace(/^[^.]*?\[\d+\]\./, "");
+                  if (cleanKey === "code" || cleanKey === "股票代码") {
+                    itemCode = String(item[mk] || "");
+                  } else if (cleanKey === "报告期") {
+                    reportPeriod = String(item[mk] || "");
+                  } else if (!["name", "domain", "type", "unit", "startDate", "endDate", "updateTime"].includes(cleanKey)) {
+                    const unit = item.unit || "";
+                    extracted[cleanKey] = String(item[mk]) + (unit ? unit : "");
+                  }
+                }
+                
+                if (itemCode && (itemCode.startsWith(code) || itemCode.replace(/\.(SZ|SH|BJ)$/i, "") === code)) {
+                  const prefix = reportPeriod ? `[${reportPeriod}]` : "";
+                  for (const [ek, ev] of Object.entries(extracted)) {
+                    if (ev && ev !== "undefined" && ev !== "null" && ev !== "") {
+                      if (!lines.some(l => l.includes(ek))) {
+                        lines.push(`${prefix} ${ek}: ${ev}`);
+                        extractedCount++;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      console.log(`[diagnose] 提取到 ${extractedCount} 个财务指标`);
+    }
+    
+    // 如果没提取到财务指标，尝试更多特定查询
+    if (lines.length <= 2) {
+      try {
+        console.log("[diagnose] 基本数据不足，尝试补充查询...");
+        // 净利润增长率通常返回最丰富的数据
+        const more = await queryWencai(`${name} 净利润增长率`, 5);
+        if (more.data) {
+          for (const row of more.data) {
+            for (const key of Object.keys(row)) {
+              const val = row[key];
+              if (Array.isArray(val) && val.length > 0) {
+                for (const item of val) {
+                  if (typeof item === "object") {
+                    for (const mk of Object.keys(item)) {
+                      const cleanKey = mk.replace(/^[^.]*?\[\d+\]\./, "");
+                      if (!["code", "name", "domain", "type", "unit", "startDate", "endDate", "updateTime", "报告期", "报告期"].includes(cleanKey) && typeof item[mk] !== "object") {
+                        const v = String(item[mk]).substring(0, 30);
+                        if (v && v !== "undefined" && v !== "" && v !== "null") {
+                          const unit = item.unit || "";
+                          if (!lines.some(l => l.includes(cleanKey))) {
+                            lines.push(`${cleanKey}: ${v}${unit}`);
+                          }
+                          break; // only first matching item per field
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        console.log("[diagnose] 补充查询失败:", e.message);
+      }
+    }
+
+    const financials = lines.length > 0 ? lines.join("\n") : "暂无详细财务数据";
+    console.log("[diagnose] 采集数据:", financials.replace(/\n/g, " | "));
+
+    // 5. 调用 AI 诊断
     const { diagnoseStock } = await import("./ai.js");
     const result = await diagnoseStock(
       { apiKey, baseUrl, model },
-      { code, name, financials, news: newsText }
+      { code, name, financials, news: newsText || "暂无相关新闻" }
     );
 
     res.json(result);
