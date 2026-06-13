@@ -1,4 +1,4 @@
-import { JSX, useState, useEffect, useCallback } from "react";
+import { JSX, useState, useEffect, useCallback, useRef } from "react";
 import { 
   Box, 
   Typography, 
@@ -17,7 +17,8 @@ import {
   Divider,
   useTheme,
   Tooltip,
-  Badge
+  Badge,
+  Autocomplete
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import RefreshIcon from "@mui/icons-material/Refresh";
@@ -74,6 +75,9 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editNote, setEditNote] = useState("");
   const [alertForm, setAlertForm] = useState<Record<number, { show: boolean; up: string; down: string }>>({});
+  const [searchOptions, setSearchOptions] = useState<{ code: string; name: string }[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchWatchlist = useCallback(async () => {
     setLoading(true);
@@ -97,34 +101,13 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
       const data = await res.json();
       const map: Record<string, PriceInfo> = {};
       (data.data || []).forEach((p: PriceInfo) => {
-        const code = p.股票代码 || "";
-        map[code] = p;
+        const key = (p.股票代码 || "").replace(/\.(SZ|SH|BJ)$/i, "");
+        map[key] = p;
       });
       setPrices(map);
     } catch (e) { console.error(e); }
     setRefreshing(false);
   }, []);
-
-  const exportWatchlist = async () => {
-    try {
-      const res = await fetch("/api/export/watchlist");
-      if (!res.ok) {
-        const err = await res.json();
-        alert(err.error || "导出失败");
-        return;
-      }
-      const blob = await res.blob();
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "watchlist.xlsx";
-      a.click();
-      URL.revokeObjectURL(a.href);
-    } catch (e: any) {
-      alert("导出失败: " + e.message);
-    }
-  };
-
-  useEffect(() => { fetchWatchlist(); }, [fetchWatchlist]);
 
   const handleAdd = async () => {
     if (!code.trim() || !sname.trim()) return;
@@ -144,7 +127,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
     fetchWatchlist();
   };
 
-  const handleUpdateNote = async (id: number) => {
+  const handleEditNote = async (id: number) => {
     await fetch(`/api/watchlist/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -154,103 +137,93 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
     fetchWatchlist();
   };
 
-  const handleGroupChange = async (id: number, newGroup: string) => {
-    await fetch(`/api/watchlist/${id}`, {
+  const handleCreateAlert = async (item: WatchItem, up: string, down: string) => {
+    if (!up && !down) return;
+    await fetch("/api/alerts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stock_code: item.stock_code,
+        stock_name: item.stock_name,
+        threshold_up: up ? parseFloat(up) : null,
+        threshold_down: down ? parseFloat(down) : null,
+      }),
+    });
+    const alertRes = await fetch("/api/alerts");
+    setAlerts(await alertRes.json());
+  };
+
+  const handleDeleteAlert = async (aid: number) => {
+    await fetch(`/api/alerts/${aid}`, { method: "DELETE" });
+    const alertRes = await fetch("/api/alerts");
+    setAlerts(await alertRes.json());
+  };
+
+  const handleToggleAlert = async (aid: number, enabled: number) => {
+    await fetch(`/api/alerts/${aid}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ group_name: newGroup }),
+      body: JSON.stringify({ enabled: enabled ? 0 : 1 }),
     });
-    fetchWatchlist();
+    const alertRes = await fetch("/api/alerts");
+    setAlerts(await alertRes.json());
   };
 
-  const toggleAlertForm = (watchId: number, stockCode: string) => {
-    const existing = alerts.find(a => a.stock_code === stockCode);
-    setAlertForm(prev => ({
-      ...prev,
-      [watchId]: {
-        show: !prev[watchId]?.show,
-        up: String(existing?.threshold_up ?? 10),
-        down: String(existing?.threshold_down ?? -8),
-      },
-    }));
-  };
+  useEffect(() => { fetchWatchlist(); }, [fetchWatchlist]);
 
-  const saveAlert = async (watchId: number, stockCode: string, stockName: string) => {
-    const form = alertForm[watchId];
-    if (!form) return;
-    const up = parseFloat(form.up);
-    const down = parseFloat(form.down);
-    if (isNaN(up) || isNaN(down)) return;
-
-    const existing = alerts.find(a => a.stock_code === stockCode);
-    if (existing) {
-      await fetch(`/api/alerts/${existing.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ threshold_up: up, threshold_down: down, enabled: 1 }),
-      });
-    } else {
-      await fetch("/api/alerts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stock_code: stockCode, stock_name: stockName, threshold_up: up, threshold_down: down }),
-      });
+  useEffect(() => {
+    if (items.length > 0 && Object.keys(prices).length === 0) {
+      refreshPrices();
     }
-    setAlertForm(prev => ({ ...prev, [watchId]: { ...prev[watchId], show: false } }));
-    fetchWatchlist();
-  };
+  }, [items, prices, refreshPrices]);
 
-  const deleteAlert = async (stockCode: string) => {
-    const existing = alerts.find(a => a.stock_code === stockCode);
-    if (existing) {
-      await fetch(`/api/alerts/${existing.id}`, { method: "DELETE" });
-      fetchWatchlist();
+  const getPriceColor = (p: PriceInfo | undefined) => {
+    if (!p) return "text.secondary";
+    const chg = p.最新涨跌幅;
+    if (chg !== undefined && chg !== null) {
+      if (chg > 0) return "error.main";
+      if (chg < 0) return "success.main";
     }
+    return "text.secondary";
   };
 
-  const formatPrice = (v: any) => v !== undefined && v !== null ? Number(v).toFixed(2) : "--";
-  const formatChange = (v: any) => {
-    if (v === undefined || v === null) return null;
-    const n = Number(v);
-    return { text: `${n > 0 ? "+" : ""}${n.toFixed(2)}%`, color: n > 0 ? "error.main" : n < 0 ? "success.main" : "text.secondary" };
+  const getChangeText = (p: PriceInfo | undefined) => {
+    if (!p) return "";
+    const price = p.最新价;
+    const chg = p.最新涨跌幅;
+    if (price !== undefined && price !== null && chg !== undefined && chg !== null) {
+      return `${price.toFixed(2)} (${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%)`;
+    }
+    return "";
   };
-
-  const groupMap = new Map<string, WatchItem[]>();
-  items.forEach(item => {
-    if (!groupMap.has(item.group_name)) groupMap.set(item.group_name, []);
-    groupMap.get(item.group_name)!.push(item);
-  });
 
   return (
-    <Box sx={{ maxWidth: "780px", margin: "0 auto", padding: "28px 24px 48px" }}>
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "8px" }}>
-        <Typography variant="h2" sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          ⭐ 自选股
-        </Typography>
+    <Box>
+      {/* 头部操作栏 */}
+      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+        <Typography variant="h6" fontWeight={600}>📋 自选股</Typography>
         <Box sx={{ display: "flex", gap: "8px" }}>
+          <Tooltip title="刷新行情">
+            <IconButton size="small" onClick={refreshPrices} disabled={refreshing}>
+              {refreshing ? <CircularProgress size={20} /> : <RefreshIcon />}
+            </IconButton>
+          </Tooltip>
           <Button
-            variant="contained"
-            color="primary"
-            startIcon={showAdd ? null : <AddIcon />}
-            onClick={() => setShowAdd(!showAdd)}
-            sx={{ borderRadius: "999px" }}
-          >
-            {showAdd ? "取消" : "添加"}
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshIcon />}
-            onClick={refreshPrices}
-            disabled={refreshing}
-            sx={{ borderRadius: "999px" }}
-          >
-            {refreshing ? "刷新中..." : "刷新行情"}
-          </Button>
-          <Button
+            size="small"
             variant="outlined"
             startIcon={<DownloadIcon />}
-            onClick={exportWatchlist}
-            sx={{ borderRadius: "999px" }}
+            onClick={async () => {
+              try {
+                const res = await fetch("/api/export/watchlist");
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "自选股.xlsx";
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (e) { console.error(e); }
+            }}
           >
             导出
           </Button>
@@ -260,19 +233,66 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
       {showAdd && (
         <Card sx={{ marginBottom: "20px", borderRadius: "12px" }}>
           <CardContent sx={{ display: "flex", flexDirection: "column", gap: "10px", padding: "16px" }}>
-            <TextField
+            <Autocomplete
+              freeSolo
               fullWidth
-              label="股票代码 *（如 600519）"
-              value={code}
-              onChange={e => setCode(e.target.value)}
-              size="small"
-            />
-            <TextField
-              fullWidth
-              label="股票名称 *（如 贵州茅台）"
-              value={sname}
-              onChange={e => setSname(e.target.value)}
-              size="small"
+              options={searchOptions}
+              loading={searchLoading}
+              getOptionLabel={(option: any) => {
+                if (typeof option === "string") return option;
+                return option.name + " (" + option.code + ")";
+              }}
+              renderOption={(props: any, option: any) => {
+                const { key, ...rest } = props;
+                return (
+                  <Box component="li" key={key} {...rest} sx={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                    <Typography variant="body2">{option.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">{option.code}</Typography>
+                  </Box>
+                );
+              }}
+              renderInput={(params: any) => {
+                return (
+                  <TextField
+                    {...params}
+                    label="搜索股票（名称或代码）*"
+                    placeholder="如 茅台 / 600519"
+                    size="small"
+                  />
+                );
+              }}
+              onInputChange={(_e: any, val: string) => {
+                if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                if (val.length < 1) {
+                  setSearchOptions([]);
+                  setCode("");
+                  setSname("");
+                  return;
+                }
+                searchTimerRef.current = setTimeout(async () => {
+                  setSearchLoading(true);
+                  try {
+                    const res = await fetch("/api/stocks/search?q=" + encodeURIComponent(val));
+                    const data = await res.json();
+                    setSearchOptions(data || []);
+                  } catch (_e) { setSearchOptions([]); }
+                  setSearchLoading(false);
+                }, 300);
+              }}
+              onChange={(_e: any, val: any) => {
+                if (val && typeof val === "object" && !Array.isArray(val)) {
+                  setCode(val.code);
+                  setSname(val.name);
+                } else if (typeof val === "string") {
+                  setCode(val);
+                  setSname("");
+                } else {
+                  setCode("");
+                  setSname("");
+                }
+              }}
+              isOptionEqualToValue={(option: any, value: any) => option.code === value.code}
+              noOptionsText="未找到匹配股票"
             />
             <FormControl fullWidth size="small">
               <InputLabel>分组</InputLabel>
@@ -290,203 +310,154 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
                 ))}
               </Select>
             </FormControl>
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={handleAdd}
-              sx={{ borderRadius: "999px", alignSelf: "flex-start" }}
-            >
-              添加
-            </Button>
+            <Box sx={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+              <Button size="small" onClick={() => { setShowAdd(false); setCode(""); setSname(""); }}>取消</Button>
+              <Button size="small" variant="contained" onClick={handleAdd} disabled={!code.trim() || !sname.trim()}>添加</Button>
+            </Box>
           </CardContent>
         </Card>
       )}
 
+      <Button
+        size="small"
+        variant={showAdd ? "outlined" : "contained"}
+        startIcon={<AddIcon />}
+        onClick={() => setShowAdd(!showAdd)}
+        sx={{ marginBottom: "16px" }}
+      >
+        {showAdd ? "收起" : "添加股票"}
+      </Button>
+
+      {/* 自选股列表 */}
       {loading ? (
-        <Box sx={{ textAlign: "center", padding: "48px" }}>
-          <CircularProgress size={40} sx={{ marginBottom: "12px" }} />
-          <Typography color="text.secondary">加载中...</Typography>
+        <Box sx={{ display: "flex", justifyContent: "center", padding: "40px" }}>
+          <CircularProgress />
         </Box>
       ) : items.length === 0 ? (
-        <Box sx={{ textAlign: "center", padding: "48px 20px", color: "text.secondary" }}>
-          <Typography>自选股列表为空</Typography>
-          <Typography variant="body2" sx={{ marginTop: "8px", color: "text.secondary" }}>
-            添加股票到自选股，随时查看行情
-          </Typography>
-        </Box>
+        <Typography color="text.secondary" textAlign="center" sx={{ padding: "40px" }}>
+          还没有自选股，点击上方按钮添加
+        </Typography>
       ) : (
-        <Box>
-          {[...groupMap.entries()].map(([g, gItems]) => (
-            <Box key={g} sx={{ marginBottom: "20px" }}>
-              <Typography variant="caption" sx={{ 
-                fontWeight: 600, 
-                color: "text.secondary", 
-                textTransform: "uppercase", 
-                letterSpacing: "0.04em", 
-                marginBottom: "8px", 
-                padding: "0 2px" 
-              }}>
-                {g} ({gItems.length})
+        Object.entries(
+          items.reduce((acc: Record<string, WatchItem[]>, item) => {
+            const g = item.group_name || "默认";
+            if (!acc[g]) acc[g] = [];
+            acc[g].push(item);
+            return acc;
+          }, {})
+        ).sort(([a], [b]) => {
+          const order = ["默认", "核心持仓", "观察仓", "ETF"];
+          return (order.indexOf(a) - order.indexOf(b));
+        }).map(([gName, gItems]) => (
+          <Box key={gName} sx={{ marginBottom: "16px" }}>
+            <Typography variant="subtitle2" fontWeight={600} sx={{ marginBottom: "8px", paddingLeft: "4px" }}>
+              {gName}
+              <Typography component="span" variant="caption" color="text.secondary" sx={{ marginLeft: "8px" }}>
+                {gItems.length} 只
               </Typography>
-              {gItems.map(item => {
-                const price = prices[item.stock_code];
-                const change = price ? formatChange(price["最新涨跌幅"]) : null;
-                const alert = alerts.find(a => a.stock_code === item.stock_code);
-                const af = alertForm[item.id];
-                return (
-                  <Card key={item.id} sx={{ 
-                    marginBottom: "6px", 
-                    borderRadius: "8px", 
-                    border: "1px solid", 
-                    borderColor: "divider",
-                    "&:hover": { 
-                      backgroundColor: "action.hover", 
-                      borderColor: "action.hover" 
-                    }
-                  }}>
-                    <CardContent sx={{ 
-                      display: "flex", 
-                      alignItems: "center", 
-                      justifyContent: "space-between", 
-                      padding: "12px 14px", 
-                      "&:last-child": { paddingBottom: "12px" } 
-                    }}>
-                      <Box 
-                        sx={{ flex: 1, minWidth: 0, cursor: "pointer" }} 
-                        onClick={() => onSearch(item.stock_name)}
-                      >
-                        <Box sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                            {item.stock_name}
-                          </Typography>
-                          <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                            {item.stock_code}
-                          </Typography>
+            </Typography>
+            {gItems.map(item => {
+              const pCode = item.stock_code;
+              const price = prices[pCode];
+              const color = getPriceColor(price);
+              const changeText = getChangeText(price);
+              const alert = alerts.find(a => a.stock_code === item.stock_code);
+              const af = alertForm[item.id];
+
+              return (
+                <Card key={item.id} sx={{ marginBottom: "8px", borderRadius: "10px", overflow: "visible" }}>
+                  <CardContent sx={{ padding: "12px 16px !important" }}>
+                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <Box sx={{ flex: 1 }}>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <Box
+                            component="span"
+                            onClick={() => onSearch(item.stock_code)}
+                            sx={{ cursor: "pointer", "&:hover": { opacity: 0.8 } }}
+                          >
+                            <Typography fontWeight={600} display="inline">{item.stock_name}</Typography>
+                          </Box>
+                          <Typography variant="caption" color="text.secondary">{item.stock_code}</Typography>
+                          {alert && (
+                            <Tooltip title={alert.enabled ? "已设告警" : "告警已停用"}>
+                              <NotificationsIcon sx={{ fontSize: 14, color: alert.enabled ? "warning.main" : "text.disabled" }} />
+                            </Tooltip>
+                          )}
                         </Box>
                         {item.note && (
-                          <Typography variant="caption" sx={{ color: "text.secondary", marginTop: "2px" }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ marginTop: "2px", display: "block" }}>
                             {item.note}
                           </Typography>
                         )}
-                        {alert && (
-                          <Chip
-                            size="small"
-                            label={`🔔 ${alert.threshold_up > 0 ? `涨${alert.threshold_up}%` : ""}${alert.threshold_down < 0 ? ` 跌${Math.abs(alert.threshold_down)}%` : ""}`}
-                            sx={{ marginTop: "4px", fontSize: "11px" }}
-                          />
-                        )}
                       </Box>
-                      
-                      <Box sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Box sx={{ textAlign: "right", minWidth: "110px" }}>
                         {price ? (
-                          <Box sx={{ textAlign: "right" }}>
-                            <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                              {formatPrice(price["最新价"])}
-                            </Typography>
-                            {change && (
-                              <Typography variant="caption" sx={{ color: change.color, fontWeight: 500 }}>
-                                {change.text}
-                              </Typography>
-                            )}
-                          </Box>
-                        ) : (
-                          <Button size="small" onClick={refreshPrices}>
-                            加载
-                          </Button>
-                        )}
-                        
-                        <Tooltip title="告警设置">
-                          <IconButton 
-                            size="small" 
-                            onClick={() => toggleAlertForm(item.id, item.stock_code)}
-                            sx={{ color: alert ? "warning.main" : "text.secondary" }}
-                          >
-                            <NotificationsIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                        
-                        <FormControl size="small" sx={{ minWidth: 80 }}>
-                          <Select
-                            value={item.group_name}
-                            onChange={e => handleGroupChange(item.id, e.target.value)}
-                            size="small"
-                            sx={{ fontSize: "12px" }}
-                          >
-                            <MenuItem value="默认">默认</MenuItem>
-                            <MenuItem value="核心持仓">核心持仓</MenuItem>
-                            <MenuItem value="观察仓">观察仓</MenuItem>
-                            <MenuItem value="ETF">ETF</MenuItem>
-                          </Select>
-                        </FormControl>
-                        
-                        <Tooltip title="删除">
-                          <IconButton size="small" onClick={() => handleDelete(item.id)}>
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      </Box>
-                    </CardContent>
-                    
-                    <Collapse in={af?.show}>
-                      <Box sx={{ padding: "12px 14px", borderTop: "1px solid", borderColor: "divider" }}>
-                        <Box sx={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "8px" }}>
-                          <Typography variant="caption" sx={{ color: "text.secondary" }}>涨超 %</Typography>
-                          <TextField
-                            size="small"
-                            type="number"
-                            value={af?.up || ""}
-                            onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], up: e.target.value } }))}
-                            sx={{ width: 80 }}
-                          />
-                          <Typography variant="caption" sx={{ color: "text.secondary" }}>跌超 %</Typography>
-                          <TextField
-                            size="small"
-                            type="number"
-                            value={af?.down || ""}
-                            onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], down: e.target.value } }))}
-                            sx={{ width: 80 }}
-                          />
-                        </Box>
-                        <Box sx={{ display: "flex", gap: "8px" }}>
-                          <Button 
-                            variant="contained" 
-                            size="small" 
-                            onClick={() => saveAlert(item.id, item.stock_code, item.stock_name)}
-                          >
-                            保存
-                          </Button>
-                          {alert && (
-                            <Button 
-                              variant="text" 
-                              size="small" 
-                              color="error"
-                              onClick={() => deleteAlert(item.stock_code)}
-                            >
-                              删除告警
-                            </Button>
-                          )}
-                          <Button 
-                            variant="text" 
-                            size="small" 
-                            onClick={() => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], show: false } }))}
-                          >
-                            取消
-                          </Button>
-                        </Box>
-                        {alert && (alert.last_triggered_up || alert.last_triggered_down) && (
-                          <Typography variant="caption" sx={{ color: "text.secondary", marginTop: "8px", display: "block" }}>
-                            上次触发: {alert.last_triggered_up && `涨 @${alert.last_triggered_up}`}
-                            {alert.last_triggered_down && ` 跌 @${alert.last_triggered_down}`}
+                          <Typography variant="body2" fontWeight={600} color={color}>
+                            {changeText}
                           </Typography>
+                        ) : (
+                          <Typography variant="caption" color="text.secondary">--</Typography>
                         )}
                       </Box>
-                    </Collapse>
-                  </Card>
-                );
-              })}
-            </Box>
-          ))}
-        </Box>
+                      <Box sx={{ display: "flex", gap: "4px", marginLeft: "8px" }}>
+                        {editingId === item.id ? (
+                          <>
+                            <TextField
+                              size="small"
+                              value={editNote}
+                              onChange={e => setEditNote(e.target.value)}
+                              placeholder="备注"
+                              sx={{ width: "100px" }}
+                            />
+                            <IconButton size="small" onClick={() => handleEditNote(item.id)} color="primary">
+                              <Typography variant="caption">保存</Typography>
+                            </IconButton>
+                          </>
+                        ) : (
+                          <IconButton size="small" onClick={() => { setEditingId(item.id); setEditNote(item.note || ""); }}>
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                        <IconButton size="small" onClick={() => {
+                          setAlertForm(prev => ({ ...prev, [item.id]: { show: !prev[item.id]?.show, up: "", down: "" } }));
+                        }}>
+                          <NotificationsIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton size="small" onClick={() => handleDelete(item.id)}>
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Box>
+                    </Box>
+
+                    {/* 告警表单 */}
+                    {af?.show && (
+                      <Box sx={{ marginTop: "8px", padding: "8px", bgcolor: "action.hover", borderRadius: "8px" }}>
+                        <Typography variant="caption" fontWeight={600} sx={{ marginBottom: "6px", display: "block" }}>
+                          设置涨跌告警 - {item.stock_name}
+                        </Typography>
+                        <Box sx={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <TextField size="small" label="涨超 (%)" value={af.up} onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], up: e.target.value } }))} sx={{ width: "100px" }} />
+                          <TextField size="small" label="跌超 (%)" value={af.down} onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], down: e.target.value } }))} sx={{ width: "100px" }} />
+                          <Button size="small" variant="contained" onClick={() => handleCreateAlert(item, af.up, af.down)}>确定</Button>
+                          {alert && (
+                            <>
+                              <Button size="small" color={alert.enabled ? "warning" : "success"} onClick={() => handleToggleAlert(alert.id, alert.enabled)}>
+                                {alert.enabled ? "暂停" : "启用"}
+                              </Button>
+                              <IconButton size="small" onClick={() => handleDeleteAlert(alert.id)}>
+                                <DeleteIcon fontSize="small" />
+                              </IconButton>
+                            </>
+                          )}
+                        </Box>
+                      </Box>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </Box>
+        ))
       )}
     </Box>
   );

@@ -773,6 +773,24 @@ app.get("/api/export/watchlist", async (_req, res) => {
 });
 
 // ============================================================
+// Stock Search (autocomplete)
+// ============================================================
+
+import { searchStocks } from "./stock_index.js";
+
+app.get("/api/stocks/search", async (req, res) => {
+  try {
+    const q = (req.query.q as string || "").trim();
+    if (!q || q.length < 1) return res.json([]);
+    const results = await searchStocks(q);
+    res.json(results);
+  } catch (error: any) {
+    console.error("[stock search]", error.message);
+    res.json([]);
+  }
+});
+
+// ============================================================
 // Health
 // ============================================================
 
