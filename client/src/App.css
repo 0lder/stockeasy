@@ -1041,6 +1041,145 @@ body {
   line-height: 1.4;
 }
 
+/* ============================================================
+   Snapshots (策略快照)
+   ============================================================ */
+
+.snapshot-section {
+  padding: 10px 14px 14px 14px;
+  margin: 0 0 8px 0;
+  background: var(--gray-50);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--gray-100);
+}
+
+.snapshot-empty {
+  font-size: 13px;
+  color: var(--gray-300);
+  text-align: center;
+  padding: 12px;
+}
+
+.snapshot-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.snapshot-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.snapshot-item:hover {
+  border-color: var(--blue);
+  background: rgba(0, 113, 227, 0.03);
+}
+
+.snapshot-date {
+  font-weight: 600;
+  color: var(--gray-700);
+}
+
+.snapshot-count {
+  color: var(--gray-500);
+}
+
+.snapshot-detail {
+  margin-top: 6px;
+}
+
+.snapshot-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.stat-card {
+  padding: 10px;
+  background: var(--white);
+  border-radius: 8px;
+  border: 1px solid var(--gray-100);
+  text-align: center;
+}
+
+.stat-period {
+  font-size: 11px;
+  color: var(--gray-500);
+  margin-bottom: 4px;
+}
+
+.stat-ratio {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.stat-ratio.up { color: var(--red); }
+.stat-ratio.down { color: var(--green); }
+
+.stat-sub {
+  font-size: 11px;
+  color: var(--gray-300);
+  margin-top: 2px;
+}
+
+.snapshot-stocks-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-500);
+  margin-bottom: 6px;
+}
+
+.snapshot-stocks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px;
+}
+
+.snapshot-stock-card {
+  padding: 8px 10px;
+  background: var(--white);
+  border-radius: 6px;
+  border: 1px solid var(--gray-100);
+  font-size: 12px;
+}
+
+.snap-stock-name {
+  font-weight: 600;
+  color: var(--gray-900);
+}
+
+.snap-stock-code {
+  font-size: 11px;
+  color: var(--gray-300);
+}
+
+.snap-stock-price {
+  margin-top: 4px;
+  color: var(--gray-700);
+  font-variant-numeric: tabular-nums;
+}
+
+.snap-stock-chg {
+  font-size: 11px;
+  font-weight: 500;
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.snap-stock-chg.up { color: var(--red); }
+.snap-stock-chg.down { color: var(--green); }
+
 /* ---- Footer ---- */
 .footer {
   text-align: center;

@@ -71,6 +71,30 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // 策略快照表
+  db.run(`
+    CREATE TABLE IF NOT EXISTS strategy_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      strategy_id INTEGER NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      stock_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (strategy_id) REFERENCES strategies(id)
+    )
+  `);
+
+  // 快照股票表
+  db.run(`
+    CREATE TABLE IF NOT EXISTS snapshot_stocks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_id INTEGER NOT NULL,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      price_at_snapshot REAL,
+      FOREIGN KEY (snapshot_id) REFERENCES strategy_snapshots(id)
+    )
+  `);
+
   // 保存到磁盘
   saveToDisk();
 
@@ -332,4 +356,89 @@ export function getWatchlistGroups(): string[] {
   if (!db) throw new Error("Database not initialized");
   const result = db.exec("SELECT DISTINCT group_name FROM watchlist ORDER BY group_name");
   return result[0]?.values.map((v: any) => v[0]) || [];
+}
+
+// ============================================================
+// Strategy Snapshots (策略快照)
+// ============================================================
+
+export interface StrategySnapshot {
+  id: number;
+  strategy_id: number;
+  snapshot_date: string;
+  stock_count: number;
+  created_at: string;
+}
+
+export interface SnapshotStock {
+  id: number;
+  snapshot_id: number;
+  stock_code: string;
+  stock_name: string;
+  price_at_snapshot: number | null;
+}
+
+// 创建快照
+export function createSnapshot(strategyId: number, stocks: { code: string; name: string; price?: number }[]): number {
+  if (!db) throw new Error("Database not initialized");
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  db.run("INSERT INTO strategy_snapshots (strategy_id, snapshot_date, stock_count) VALUES (?, ?, ?)",
+    [strategyId, dateStr, stocks.length]);
+  const snapshotId = (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
+
+  const stmt = db.prepare("INSERT INTO snapshot_stocks (snapshot_id, stock_code, stock_name, price_at_snapshot) VALUES (?, ?, ?, ?)");
+  for (const s of stocks) {
+    stmt.run([snapshotId, s.code, s.name, s.price || null]);
+  }
+  stmt.free();
+  saveToDisk();
+  return snapshotId;
+}
+
+// 获取策略的所有快照
+export function getSnapshots(strategyId: number): StrategySnapshot[] {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM strategy_snapshots WHERE strategy_id = ? ORDER BY snapshot_date DESC, created_at DESC");
+  stmt.bind([strategyId]);
+  const rows: StrategySnapshot[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  stmt.free();
+  return rows;
+}
+
+// 获取快照中的股票列表
+export function getSnapshotStocks(snapshotId: number): SnapshotStock[] {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM snapshot_stocks WHERE snapshot_id = ?");
+  stmt.bind([snapshotId]);
+  const rows: SnapshotStock[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  stmt.free();
+  return rows;
+}
+
+// 删除快照
+export function deleteSnapshot(snapshotId: number): boolean {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM snapshot_stocks WHERE snapshot_id = ?", [snapshotId]);
+  db.run("DELETE FROM strategy_snapshots WHERE id = ?", [snapshotId]);
+  saveToDisk();
+  return true;
+}
+
+// 获取所有快照（含策略名）
+export function getAllSnapshots(): { id: number; strategy_id: number; strategy_name: string; snapshot_date: string; stock_count: number; created_at: string }[] {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare(`
+    SELECT ss.*, s.name as strategy_name
+    FROM strategy_snapshots ss
+    JOIN strategies s ON s.id = ss.strategy_id
+    ORDER BY ss.created_at DESC
+  `);
+  stmt.bind([]);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  stmt.free();
+  return rows;
 }

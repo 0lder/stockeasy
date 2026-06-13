@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import { queryWencai } from "./wencai.js";
-import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups } from "./database.js";
+import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots } from "./database.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -177,6 +177,161 @@ app.post("/api/strategies/:id/run", async (req, res) => {
     res.json({ ...result, strategy_name: strategy.name, elapsed_ms: elapsed });
   } catch (error: any) {
     res.status(500).json({ error: "运行策略失败", detail: error.message });
+  }
+});
+
+// ============================================================
+// API: Strategy Snapshots (策略快照)
+// ============================================================
+
+// 创建快照
+app.post("/api/strategies/:id/snapshot", async (req, res) => {
+  try {
+    const strategyId = parseInt(req.params.id);
+    if (isNaN(strategyId)) return res.status(400).json({ error: "无效的策略 ID" });
+
+    const strategies = getStrategies();
+    const strategy = strategies.find(s => s.id === strategyId);
+    if (!strategy) return res.status(404).json({ error: "策略不存在" });
+
+    const { stocks } = req.body;
+    if (!stocks || !Array.isArray(stocks) || stocks.length === 0) {
+      return res.status(400).json({ error: "股票列表不能为空" });
+    }
+
+    const snapshotId = createSnapshot(strategyId, stocks.map((s: any) => ({
+      code: s.股票代码 || s.code || s.stock_code,
+      name: s.股票简称 || s.name || s.stock_name,
+      price: parseFloat(s.最新价 || s.price || 0),
+    })));
+
+    res.json({ success: true, id: snapshotId, stock_count: stocks.length });
+  } catch (error: any) {
+    res.status(500).json({ error: "创建快照失败", detail: error.message });
+  }
+});
+
+// 获取策略的所有快照
+app.get("/api/strategies/:id/snapshots", (req, res) => {
+  try {
+    const strategyId = parseInt(req.params.id);
+    if (isNaN(strategyId)) return res.status(400).json({ error: "无效的策略 ID" });
+    const snapshots = getSnapshots(strategyId);
+    res.json(snapshots);
+  } catch (error: any) {
+    res.status(500).json({ error: "获取快照失败", detail: error.message });
+  }
+});
+
+// 获取所有快照
+app.get("/api/snapshots", (_req, res) => {
+  try {
+    const snapshots = getAllSnapshots();
+    res.json(snapshots);
+  } catch (error: any) {
+    res.status(500).json({ error: "获取快照列表失败", detail: error.message });
+  }
+});
+
+// 获取快照详情（含股票 + 表现分析）
+app.get("/api/snapshots/:id", async (req, res) => {
+  try {
+    const snapshotId = parseInt(req.params.id);
+    if (isNaN(snapshotId)) return res.status(400).json({ error: "无效的快照 ID" });
+
+    const stocks = getSnapshotStocks(snapshotId);
+    if (stocks.length === 0) return res.json({ stocks: [], stats: {} });
+
+    // 重新执行策略查询获取最新行情（平铺格式，含 最新价 最新涨跌幅）
+    const strategy = getStrategies().find(s => s.id === parseInt(req.params.id));
+    const queryText = strategy?.query_text || stocks.map(s => s.stock_code).join(" ");
+    const priceResult = await queryWencai(queryText, stocks.length * 2);
+
+    // 辅助函数：从任意格式提取股票数据
+    const extractFromRow = (row: any): any[] => {
+      const results: any[] = [];
+      // format 1: flat data with 股票代码 (策略查询格式)
+      if (row.股票代码) {
+        results.push(row);
+      }
+      // format 2: tableV1 array (单股查询格式)
+      if (row.tableV1 && Array.isArray(row.tableV1)) {
+        results.push(...row.tableV1);
+      }
+      // format 3: compound-key arrays (多股联合查询格式)
+      for (const key of Object.keys(row)) {
+        if (Array.isArray(row[key]) && key !== "tableV1") {
+          for (const item of row[key]) {
+            if (item.代码 || item.股票代码) {
+              results.push(item);
+            }
+          }
+        }
+      }
+      return results;
+    };
+
+    // 构建最新价映射（代码归一化）
+    const priceMap: Record<string, any> = {};
+    for (const row of (priceResult.data || [])) {
+      for (const item of extractFromRow(row)) {
+        const code = (item.股票代码 || item.代码 || "").replace(/\.(SZ|SH)$/i, "");
+        if (code) priceMap[code] = { ...priceMap[code], ...item };
+      }
+    }
+
+    // 合并数据
+    const enriched = stocks.map(s => {
+      const lookupCode = s.stock_code.replace(/\.(SZ|SH)$/i, "");
+      const p = priceMap[lookupCode] || {};
+      // 表格式可能有不同字段名
+      const currentPrice = parseFloat(p.最新价 || p["收盘价:前复权"] || p.latest_price || 0);
+      const changePct = parseFloat(p.最新涨跌幅 || p["涨跌幅:前复权"] || p.change_pct || 0);
+
+      return {
+        stock_code: s.stock_code,
+        stock_name: s.stock_name,
+        price_at_snapshot: s.price_at_snapshot,
+        current_price: currentPrice || "-",
+        change_pct: changePct || "-",
+      };
+    });
+
+    // 简化统计：只算从快照到现在的涨跌幅
+    const calcStats = () => {
+      let up = 0, down = 0, flat = 0;
+      enriched.forEach(s => {
+        const snapPrice = s.price_at_snapshot;
+        const curPrice = s.current_price;
+        if (snapPrice && curPrice !== "-") {
+          const chg = (Number(curPrice) - Number(snapPrice)) / Number(snapPrice) * 100;
+          if (chg > 0) up++;
+          else if (chg < 0) down++;
+          else flat++;
+        }
+      });
+      const total = up + down + flat;
+      return {
+        snapshot_today: { up, total, ratio: total > 0 ? `${(up / total * 100).toFixed(1)}%` : "-" },
+      };
+    };
+
+    res.json({ stocks: enriched, stats: calcStats() });
+  } catch (error: any) {
+    console.error("[snapshot detail]", error);
+    res.status(500).json({ error: "获取快照详情失败", detail: error.message });
+  }
+});
+
+// 删除快照
+app.delete("/api/snapshots/:id", (req, res) => {
+  try {
+    const snapshotId = parseInt(req.params.id);
+    if (isNaN(snapshotId)) return res.status(400).json({ error: "无效的快照 ID" });
+    deleteSnapshot(snapshotId);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: "删除快照失败", detail: error.message });
   }
 });
 
