@@ -74,6 +74,25 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
     setRefreshing(false);
   }, []);
 
+  const exportWatchlist = async () => {
+    try {
+      const res = await fetch("/api/export/watchlist");
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || "导出失败");
+        return;
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "watchlist.xlsx";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) {
+      alert("导出失败: " + e.message);
+    }
+  };
+
   useEffect(() => { fetchWatchlist(); }, [fetchWatchlist]);
 
   const handleAdd = async () => {
@@ -181,6 +200,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
           <button className="btn-secondary-sm" onClick={refreshPrices} disabled={refreshing}>
             {refreshing ? "刷新中..." : "🔄 刷新行情"}
           </button>
+          <button className="btn-secondary-sm" onClick={exportWatchlist}>⬇ 导出</button>
         </div>
       </div>
 

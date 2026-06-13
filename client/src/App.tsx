@@ -107,6 +107,28 @@ export default function App(): JSX.Element {
     if (showHistory) fetchHistory();
   }, [showHistory, fetchHistory]);
 
+  // ---------- export ----------
+  const exportData = async (url: string) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || "导出失败");
+        return;
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      const disp = res.headers.get("Content-Disposition") || "";
+      const match = disp.match(/filename="(.+?)"/);
+      a.download = match ? decodeURIComponent(match[1]) : "export.xlsx";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) {
+      alert("导出失败: " + e.message);
+    }
+  };
+
   // ---------- helpers ----------
   const isNumericCol = (col: any): boolean => {
     if (col.type === "number" || col.type === "float" || col.type === "int") return true;
@@ -235,6 +257,9 @@ export default function App(): JSX.Element {
                     <div className="result-header">
                       <span className="result-title">查询结果</span>
                       <span className="result-count">共 {result.total} 条</span>
+                      <button className="export-btn" onClick={() => exportData(`/api/export/query?q=${encodeURIComponent(query)}`)}>
+                        ⬇ 导出 Excel
+                      </button>
                     </div>
 
                     {result.data && result.data.length > 0 ? (

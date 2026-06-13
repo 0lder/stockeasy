@@ -414,6 +414,24 @@ body {
   border-radius: 999px;
 }
 
+.export-btn {
+  margin-left: auto;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--blue);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--blue);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.export-btn:hover {
+  background: var(--blue);
+  color: #fff;
+}
+
 /* ---- Error / Loading / Empty ---- */
 .error-card {
   display: flex;

@@ -3,6 +3,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import ExcelJS from "exceljs";
 import { queryWencai } from "./wencai.js";
 import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist } from "./database.js";
 
@@ -600,6 +601,174 @@ app.post("/api/alerts/from-watchlist", (req, res) => {
     res.json({ success: true, created });
   } catch (error: any) {
     res.status(500).json({ error: "从自选股创建告警失败", detail: error.message });
+  }
+});
+
+// ============================================================
+// Export
+// ============================================================
+
+// 通用 Excel 生成函数
+async function generateExcel(data: any[], sheetName = "Sheet1", columns?: string[]): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "StockEasy";
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet(sheetName);
+
+  // 自动探测列
+  const cols = columns || (data.length > 0 ? Object.keys(data[0]) : []);
+  if (cols.length === 0) throw new Error("没有数据可导出");
+
+  // 列定义
+  const colDefs = cols.map(c => ({
+    header: c,
+    key: c,
+    width: Math.max(c.length * 2 + 2, 12),
+  }));
+  sheet.columns = colDefs;
+
+  // 写数据
+  data.forEach(row => sheet.addRow(row));
+
+  // 样式：表头
+  const headerRow = sheet.getRow(1);
+  headerRow.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11, name: "Arial" };
+  headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF007AFF" } };
+  headerRow.alignment = { horizontal: "center", vertical: "middle" };
+  headerRow.height = 24;
+
+  // 冻结首行
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+
+  // 奇偶行着色
+  for (let i = 2; i <= data.length + 1; i++) {
+    const row = sheet.getRow(i);
+    row.alignment = { vertical: "middle" };
+    if (i % 2 === 0) {
+      row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F7" } };
+    }
+  }
+
+  // Buffer
+  const buf = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buf);
+}
+
+// POST /api/export — 通用数据导出
+app.post("/api/export", async (req, res) => {
+  try {
+    const { data, filename = "export.xlsx", sheetName = "Sheet1", columns } = req.body;
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return res.status(400).json({ error: "没有数据可导出" });
+    }
+    const buf = await generateExcel(data, sheetName, columns);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.send(buf);
+  } catch (error: any) {
+    console.error("[export error]", error);
+    res.status(500).json({ error: "导出失败", detail: error.message });
+  }
+});
+
+// GET /api/export/query — 导出查询结果
+app.get("/api/export/query", async (req, res) => {
+  try {
+    const q = (req.query.q as string || "").trim();
+    const limit = parseInt(req.query.limit as string) || 50;
+    if (!q) return res.status(400).json({ error: "请输入查询条件" });
+
+    const result = await queryWencai(q, limit);
+    if (!result.data || result.data.length === 0) {
+      return res.status(400).json({ error: "查询结果为空" });
+    }
+
+    const buf = await generateExcel(result.data, "查询结果");
+    const filename = `${q.slice(0, 20)}.xlsx`;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.send(buf);
+  } catch (error: any) {
+    console.error("[export query]", error);
+    res.status(500).json({ error: "导出失败", detail: error.message });
+  }
+});
+
+// GET /api/export/snapshot/:id — 导出快照
+app.get("/api/export/snapshot/:id", async (req, res) => {
+  try {
+    const snapshotId = parseInt(req.params.id);
+    if (isNaN(snapshotId)) return res.status(400).json({ error: "无效的快照 ID" });
+
+    const stocks = getSnapshotStocks(snapshotId);
+    if (stocks.length === 0) return res.status(400).json({ error: "快照数据为空" });
+
+    // 获取最新行情
+    const queryText = stocks.map(s => s.stock_code).join(" ");
+    const priceResult = await queryWencai(queryText, stocks.length * 2);
+    const priceMap: Record<string, any> = {};
+    for (const row of (priceResult.data || [])) {
+      const code = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+      if (code) priceMap[code] = row;
+    }
+
+    const enriched = stocks.map(s => {
+      const p = priceMap[s.stock_code.replace(/\.(SZ|SH)$/i, "")] || {};
+      const curPrice = parseFloat(p.最新价 || 0);
+      const snapPrice = parseFloat(s.price_at_snapshot as string);
+      const chgPct = curPrice && snapPrice ? ((curPrice - snapPrice) / snapPrice * 100) : 0;
+      return {
+        股票代码: s.stock_code,
+        股票名称: s.stock_name,
+        快照价格: snapPrice || "-",
+        最新价: curPrice || "-",
+        涨跌幅: chgPct ? `${chgPct.toFixed(2)}%` : "-",
+      };
+    });
+
+    const buf = await generateExcel(enriched, "快照数据", ["股票代码", "股票名称", "快照价格", "最新价", "涨跌幅"]);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="snapshot_${snapshotId}.xlsx"`);
+    res.send(buf);
+  } catch (error: any) {
+    console.error("[export snapshot]", error);
+    res.status(500).json({ error: "导出快照失败", detail: error.message });
+  }
+});
+
+// GET /api/export/watchlist — 导出自选股
+app.get("/api/export/watchlist", async (_req, res) => {
+  try {
+    const items = getWatchlist();
+    if (items.length === 0) return res.status(400).json({ error: "自选股为空" });
+
+    // 获取最新行情
+    const queryText = items.map(s => s.stock_code).join(",");
+    const priceResult = await queryWencai(queryText, items.length * 2);
+    const priceMap: Record<string, any> = {};
+    for (const row of (priceResult.data || [])) {
+      const code = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+      if (code) priceMap[code] = row;
+    }
+
+    const enriched = items.map(s => {
+      const p = priceMap[s.stock_code.replace(/\.(SZ|SH)$/i, "")] || {};
+      return {
+        股票代码: s.stock_code,
+        股票名称: s.stock_name,
+        分组: s.group_name || "默认",
+        最新价: parseFloat(p.最新价 || 0) || "-",
+        最新涨跌幅: p.最新涨跌幅 ? `${parseFloat(p.最新涨跌幅).toFixed(2)}%` : "-",
+      };
+    });
+
+    const buf = await generateExcel(enriched, "自选股", ["股票代码", "股票名称", "分组", "最新价", "最新涨跌幅"]);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="watchlist.xlsx"`);
+    res.send(buf);
+  } catch (error: any) {
+    console.error("[export watchlist]", error);
+    res.status(500).json({ error: "导出自选股失败", detail: error.message });
   }
 });
 

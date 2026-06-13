@@ -52,6 +52,26 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
   const [savingId, setSavingId] = useState<number | null>(null);
   const [expandedStrategy, setExpandedStrategy] = useState<number | null>(null);
 
+  // Export
+  const exportSnapshot = async (snapshotId: number) => {
+    try {
+      const res = await fetch(`/api/export/snapshot/${snapshotId}`);
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || "导出失败");
+        return;
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `snapshot_${snapshotId}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) {
+      alert("导出失败: " + e.message);
+    }
+  };
+
   // Comparison
   const [selectedSnaps, setSelectedSnaps] = useState<number[]>([]);
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
@@ -260,6 +280,8 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
                                     <div className="snapshot-count">{snap.stock_count} 只</div>
                                     <button className="icon-btn-sm" title="查看详情"
                                       onClick={(e) => { e.stopPropagation(); handleViewSnapshot(snap.id); }}>📊</button>
+                                    <button className="icon-btn-sm" title="导出 Excel"
+                                      onClick={(e) => { e.stopPropagation(); exportSnapshot(snap.id); }}>⬇</button>
                                     <button className="icon-btn-sm" title="删除快照"
                                       onClick={(e) => { e.stopPropagation(); handleDeleteSnapshot(snap.id, s.id); }}>🗑️</button>
                                   </div>
