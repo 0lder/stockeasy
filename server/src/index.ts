@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import ExcelJS from "exceljs";
 import { queryWencai } from "./wencai.js";
-import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist } from "./database.js";
+import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist, getSetting, setSetting, deleteSetting } from "./database.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -787,6 +787,120 @@ app.get("/api/stocks/search", async (req, res) => {
   } catch (error: any) {
     console.error("[stock search]", error.message);
     res.json([]);
+  }
+});
+
+// ============================================================
+// AI Config
+// ============================================================
+
+app.get("/api/config/ai", (_req, res) => {
+  try {
+    const apiKey = getSetting("ai_api_key") || "";
+    const baseUrl = getSetting("ai_base_url") || "https://api.openai.com/v1";
+    const model = getSetting("ai_model") || "gpt-4o-mini";
+    res.json({ apiKey: apiKey ? "***已设置***" : "", baseUrl, model, hasKey: !!apiKey });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put("/api/config/ai", (req, res) => {
+  try {
+    const { apiKey, baseUrl, model } = req.body;
+    if (apiKey !== undefined && apiKey !== "***已设置***") {
+      setSetting("ai_api_key", apiKey);
+    }
+    if (baseUrl) setSetting("ai_base_url", baseUrl);
+    if (model) setSetting("ai_model", model);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// Stock Diagnosis
+// ============================================================
+
+async function gatherNews(code: string, name: string): Promise<string> {
+  try {
+    // 尝试通过浏览器抓取 CNBC 新闻 / 或新浪财经新闻
+    // 这里使用东方财富的新闻搜索作为轻量方案
+    const url = `https://searchapi.eastmoney.com/bgsearch/api?client=app&keyword=${encodeURIComponent(name + " " + code)}&page=1&size=5`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return "";
+    const data = await res.json();
+    if (data?.Data?.list) {
+      return data.Data.list.slice(0, 5).map((item: any) => {
+        return `[${item.date || "近期"}] ${item.title || ""}`;
+      }).join("\n");
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+app.post("/api/diagnose/:code", async (req, res) => {
+  try {
+    const code = req.params.code.replace(/\.(SZ|SH|BJ)$/i, "");
+    const name = (req.body?.name || code) as string;
+
+    // 1. 获取 AI 配置
+    const apiKey = getSetting("ai_api_key");
+    if (!apiKey) {
+      return res.status(400).json({ error: "请先在设置中配置 AI API Key" });
+    }
+    const baseUrl = getSetting("ai_base_url") || "https://api.openai.com/v1";
+    const model = getSetting("ai_model") || "gpt-4o-mini";
+
+    // 2. 并行获取财务数据和新闻
+    const [wcData, newsText] = await Promise.all([
+      queryWencai(`${code} ${name} 最新价 最新涨跌幅 市盈率 市净率 总市值 流通市值 净利润 营业收入 毛利率 净利率 资产负债率 ROE 主营业务 所属行业`, 5),
+      gatherNews(code, name),
+    ]);
+
+    // 3. 整理财务数据
+    let financials = "无详细财务数据";
+    if (wcData.data && wcData.data.length > 0) {
+      const row = wcData.data[0];
+      const fields = [
+        ["最新价", row.最新价],
+        ["涨跌幅", row.最新涨跌幅 != null ? row.最新涨跌幅 + "%" : undefined],
+        ["市盈率(PE)", row.市盈率],
+        ["市净率(PB)", row.市净率],
+        ["总市值", row.总市值],
+        ["流通市值", row.流通市值],
+        ["净利润", row.净利润],
+        ["营业收入", row.营业收入],
+        ["毛利率", row.毛利率],
+        ["净利率", row.净利率],
+        ["资产负债率", row.资产负债率],
+        ["ROE", row.ROE || row.净资产收益率],
+        ["主营业务", row.主营业务],
+        ["所属行业", row.所属行业],
+      ];
+      financials = fields
+        .filter(([, v]) => v !== undefined && v !== null && v !== "")
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("\n");
+    }
+
+    // 4. 调用 AI 诊断
+    const { diagnoseStock } = await import("./ai.js");
+    const result = await diagnoseStock(
+      { apiKey, baseUrl, model },
+      { code, name, financials, news: newsText }
+    );
+
+    res.json(result);
+  } catch (error: any) {
+    console.error("[diagnose]", error.message);
+    res.status(500).json({ error: "诊断失败: " + error.message });
   }
 });
 

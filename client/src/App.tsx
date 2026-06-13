@@ -27,7 +27,13 @@ import {
   Pagination, 
   Badge, 
   useTheme, 
-  ThemeProvider 
+  ThemeProvider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Snackbar,
+  Tooltip
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import HistoryIcon from "@mui/icons-material/History";
@@ -36,6 +42,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import DownloadIcon from "@mui/icons-material/Download";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
+import SettingsIcon from "@mui/icons-material/Settings";
 import Sidebar, { TabKey } from "./components/Sidebar";
 import StrategyPanel from "./components/StrategyPanel";
 import WatchlistPanel from "./components/WatchlistPanel";
@@ -83,6 +90,13 @@ export default function App(): JSX.Element {
   const [historyPage, setHistoryPage] = useState(1);
   const [showHistory, setShowHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // AI Settings state
+  const [showSettings, setShowSettings] = useState(false);
+  const [aiConfig, setAiConfig] = useState({ apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" });
+  const [aiConfigForm, setAiConfigForm] = useState({ apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" });
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configMsg, setConfigMsg] = useState("");
 
   // ---------- search ----------
   const doSearch = useCallback(async (q: string, limit = 50) => {
@@ -346,6 +360,22 @@ export default function App(): JSX.Element {
             >
               {darkMode ? <LightModeIcon /> : <DarkModeIcon />}
             </IconButton>
+
+            <Tooltip title="AI 设置">
+              <IconButton onClick={() => {
+                // 加载当前配置
+                fetch("/api/config/ai").then(r => r.json()).then(data => {
+                  setAiConfigForm({
+                    apiKey: "",
+                    baseUrl: data.baseUrl || "https://api.openai.com/v1",
+                    model: data.model || "gpt-4o-mini",
+                  });
+                  setShowSettings(true);
+                }).catch(() => setShowSettings(true));
+              }} color="inherit">
+                <SettingsIcon />
+              </IconButton>
+            </Tooltip>
             
             <Button
               variant={showHistory ? "contained" : "text"}
@@ -784,6 +814,77 @@ export default function App(): JSX.Element {
           </Drawer>
         </>
       )}
+
+      {/* AI Settings Dialog */}
+      <Dialog open={showSettings} onClose={() => setShowSettings(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>🤖 AI 诊断设置</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "8px" }}>
+            <Typography variant="body2" color="text.secondary">
+              配置 OpenAI 兼容 API，用于一键诊股功能。配置信息仅存储在本地，不会上传。
+            </Typography>
+            <TextField
+              fullWidth
+              label="API Key"
+              type="password"
+              value={aiConfigForm.apiKey}
+              onChange={e => setAiConfigForm(prev => ({ ...prev, apiKey: e.target.value }))}
+              placeholder="sk-..."
+              size="small"
+            />
+            <TextField
+              fullWidth
+              label="Base URL"
+              value={aiConfigForm.baseUrl}
+              onChange={e => setAiConfigForm(prev => ({ ...prev, baseUrl: e.target.value }))}
+              placeholder="https://api.openai.com/v1"
+              size="small"
+            />
+            <TextField
+              fullWidth
+              label="模型"
+              value={aiConfigForm.model}
+              onChange={e => setAiConfigForm(prev => ({ ...prev, model: e.target.value }))}
+              placeholder="gpt-4o-mini"
+              size="small"
+              helperText="推荐：gpt-4o-mini（经济）、gpt-4o（精准）、deepseek-chat、qwen-turbo 等"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowSettings(false)}>取消</Button>
+          <Button
+            variant="contained"
+            disabled={configSaving}
+            onClick={async () => {
+              setConfigSaving(true);
+              try {
+                const res = await fetch("/api/config/ai", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(aiConfigForm),
+                });
+                if (res.ok) {
+                  setConfigMsg("配置已保存 ✅");
+                  setShowSettings(false);
+                } else {
+                  setConfigMsg("保存失败");
+                }
+              } catch { setConfigMsg("保存失败"); }
+              setConfigSaving(false);
+            }}
+          >
+            保存
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar
+        open={!!configMsg}
+        autoHideDuration={3000}
+        onClose={() => setConfigMsg("")}
+        message={configMsg}
+      />
 
       {/* Footer */}
       <Box component="footer" sx={{ 

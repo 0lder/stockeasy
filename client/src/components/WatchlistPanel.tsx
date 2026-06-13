@@ -18,7 +18,12 @@ import {
   useTheme,
   Tooltip,
   Badge,
-  Autocomplete
+  Autocomplete,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  LinearProgress
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import RefreshIcon from "@mui/icons-material/Refresh";
@@ -29,6 +34,7 @@ import NotificationsIcon from "@mui/icons-material/Notifications";
 import SearchIcon from "@mui/icons-material/Search";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import MedicalServicesIcon from "@mui/icons-material/MedicalServices";
 
 interface WatchItem {
   id: number;
@@ -78,6 +84,12 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
   const [searchOptions, setSearchOptions] = useState<{ code: string; name: string }[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Diagnosis state
+  const [diagnosing, setDiagnosing] = useState<string | null>(null); // stock code being diagnosed
+  const [diagResult, setDiagResult] = useState<{ score: number; recommendation: string; reason: string } | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagError, setDiagError] = useState("");
 
   const fetchWatchlist = useCallback(async () => {
     setLoading(true);
@@ -176,6 +188,36 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
       refreshPrices();
     }
   }, [items, prices, refreshPrices]);
+
+  // ---------- diagnosis ----------
+  const handleDiagnose = async (code: string, name: string) => {
+    setDiagnosing(code);
+    setDiagLoading(true);
+    setDiagError("");
+    setDiagResult(null);
+    try {
+      const res = await fetch("/api/diagnose/" + code, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (res.status === 400) {
+        const err = await res.json();
+        setDiagError(err.error || "请先在设置中配置 AI API Key");
+        return;
+      }
+      if (!res.ok) {
+        setDiagError("诊断失败，请稍后重试");
+        return;
+      }
+      const data = await res.json();
+      setDiagResult(data);
+    } catch {
+      setDiagError("诊断请求失败");
+    } finally {
+      setDiagLoading(false);
+    }
+  };
 
   const getPriceColor = (p: PriceInfo | undefined) => {
     if (!p) return "text.secondary";
@@ -423,6 +465,19 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
                         }}>
                           <NotificationsIcon fontSize="small" />
                         </IconButton>
+                        <Tooltip title="一键诊股">
+                          <IconButton
+                            size="small"
+                            onClick={() => handleDiagnose(item.stock_code, item.stock_name)}
+                            color={diagResult && diagResult.score >= 7 ? "success" : diagResult && diagResult.score >= 4 ? "warning" : "default"}
+                          >
+                            {diagnosing === item.stock_code && diagLoading ? (
+                              <CircularProgress size={16} />
+                            ) : (
+                              <MedicalServicesIcon fontSize="small" />
+                            )}
+                          </IconButton>
+                        </Tooltip>
                         <IconButton size="small" onClick={() => handleDelete(item.id)}>
                           <DeleteIcon fontSize="small" />
                         </IconButton>
@@ -459,6 +514,61 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
           </Box>
         ))
       )}
+
+      {/* 诊股结果弹窗 */}
+      <Dialog open={diagResult !== null || !!diagError} onClose={() => { setDiagResult(null); setDiagError(""); setDiagnosing(null); }} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          {diagnosing ? "诊股结果 - " + diagnosing : "诊股"}
+        </DialogTitle>
+        <DialogContent>
+          {diagLoading && (
+            <Box sx={{ textAlign: "center", padding: "32px" }}>
+              <CircularProgress />
+              <Typography sx={{ marginTop: "16px" }} color="text.secondary">AI 分析中...</Typography>
+            </Box>
+          )}
+          {diagError && (
+            <Box sx={{ textAlign: "center", padding: "16px" }}>
+              <Typography color="error">{diagError}</Typography>
+            </Box>
+          )}
+          {diagResult && !diagLoading && (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              {/* 评分 */}
+              <Box sx={{ textAlign: "center" }}>
+                <Typography variant="h3" fontWeight={700} sx={{
+                  color: diagResult.score >= 7 ? "success.main" : diagResult.score >= 4 ? "warning.main" : "error.main",
+                }}>
+                  {diagResult.score}/10
+                </Typography>
+                <Typography variant="body1" fontWeight={600} sx={{
+                  color: diagResult.score >= 7 ? "success.main" : diagResult.score >= 4 ? "warning.main" : "error.main",
+                }}>
+                  {diagResult.recommendation}
+                </Typography>
+                <Box sx={{ width: "100%", marginTop: "8px" }}>
+                  <LinearProgress
+                    variant="determinate"
+                    value={diagResult.score * 10}
+                    color={diagResult.score >= 7 ? "success" : diagResult.score >= 4 ? "warning" : "error"}
+                    sx={{ height: 8, borderRadius: 4 }}
+                  />
+                </Box>
+              </Box>
+
+              <Divider />
+
+              {/* 分析理由 */}
+              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
+                {diagResult.reason}
+              </Typography>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setDiagResult(null); setDiagError(""); setDiagnosing(null); }}>关闭</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

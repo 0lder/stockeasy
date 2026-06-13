@@ -565,3 +565,35 @@ export function createAlertsFromWatchlist(stocks: { code: string; name: string }
   }
   return created;
 }
+
+// ============================================================
+// Settings 设置存储（AI 配置等）
+// ============================================================
+
+export function getSetting(key: string): string | null {
+  if (!db) throw new Error("Database not initialized");
+  try { db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"); } catch { /* ok */ }
+  const stmt = db.prepare("SELECT value FROM settings WHERE key = ?");
+  stmt.bind([key]);
+  if (stmt.step()) {
+    const val = stmt.getAsObject() as { value: string };
+    stmt.free();
+    return val.value;
+  }
+  stmt.free();
+  return null;
+}
+
+export function setSetting(key: string, value: string): void {
+  if (!db) throw new Error("Database not initialized");
+  db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
+  db.run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, value]);
+  saveToDisk();
+}
+
+export function deleteSetting(key: string): void {
+  if (!db) throw new Error("Database not initialized");
+  db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
+  db.run("DELETE FROM settings WHERE key = ?", [key]);
+  saveToDisk();
+}
