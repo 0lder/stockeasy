@@ -40,6 +40,18 @@ export default function App(): JSX.Element {
   const [showHistory, setShowHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Theme
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem("stockeasy-theme");
+    if (saved) return saved === "dark";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
+    localStorage.setItem("stockeasy-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
+
   // ---------- search ----------
   const doSearch = useCallback(async (q: string, limit = 50) => {
     const trimmed = q.trim();
@@ -143,6 +155,13 @@ export default function App(): JSX.Element {
         <div className="nav-inner">
           <a className="nav-logo" href="/">📈 StockEasy</a>
           <div className="nav-right">
+            <button
+              className="theme-btn"
+              onClick={() => setDarkMode(!darkMode)}
+              title={darkMode ? "切换浅色模式" : "切换深色模式"}
+            >
+              {darkMode ? "☀️" : "🌙"}
+            </button>
             <button
               className={`history-btn ${showHistory ? "active" : ""}`}
               onClick={() => setShowHistory(!showHistory)}

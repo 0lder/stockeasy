@@ -71,6 +71,21 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // 迁移：添加告警相关列（兼容已有数据库）
+  const watchlistCols = db.exec("PRAGMA table_info(watchlist)").flatMap((r: any) => r.values.map((v: any) => v[1]));
+  if (!watchlistCols.includes("price_at_add")) {
+    db.run("ALTER TABLE watchlist ADD COLUMN price_at_add REAL");
+  }
+  if (!watchlistCols.includes("alert_up")) {
+    db.run("ALTER TABLE watchlist ADD COLUMN alert_up REAL");
+  }
+  if (!watchlistCols.includes("alert_down")) {
+    db.run("ALTER TABLE watchlist ADD COLUMN alert_down REAL");
+  }
+  if (!watchlistCols.includes("alert_triggered")) {
+    db.run("ALTER TABLE watchlist ADD COLUMN alert_triggered INTEGER DEFAULT 0");
+  }
+
   // 策略快照表
   db.run(`
     CREATE TABLE IF NOT EXISTS strategy_snapshots (
@@ -322,17 +337,21 @@ export interface WatchItem {
   note: string;
   group_name: string;
   added_at: string;
+  price_at_add: number | null;
+  alert_up: number | null;
+  alert_down: number | null;
+  alert_triggered: number;
 }
 
-export function addToWatchlist(stockCode: string, stockName: string, note: string = "", groupName: string = "默认"): number {
+export function addToWatchlist(stockCode: string, stockName: string, note: string = "", groupName: string = "默认", priceAtAdd?: number): number {
   if (!db) throw new Error("Database not initialized");
   // 查重
   const existing = db.exec("SELECT id FROM watchlist WHERE stock_code = ?", [stockCode]);
   if (existing.length > 0 && existing[0].values.length > 0) {
     return existing[0].values[0][0] as number;
   }
-  const stmt = db.prepare("INSERT INTO watchlist (stock_code, stock_name, note, group_name) VALUES (?, ?, ?, ?)");
-  stmt.run([stockCode, stockName, note, groupName]);
+  const stmt = db.prepare("INSERT INTO watchlist (stock_code, stock_name, note, group_name, price_at_add) VALUES (?, ?, ?, ?, ?)");
+  stmt.run([stockCode, stockName, note, groupName, priceAtAdd || null]);
   stmt.free();
   saveToDisk();
   return (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
