@@ -356,46 +356,19 @@ app.get("/api/snapshots/:id", async (req, res) => {
     const queryText = strategy?.query_text || stocks.map(s => s.stock_code).join(" ");
     const priceResult = await queryWencai(queryText, stocks.length * 2);
 
-    // 辅助函数：从任意格式提取股票数据
-    const extractFromRow = (row: any): any[] => {
-      const results: any[] = [];
-      // format 1: flat data with 股票代码 (策略查询格式)
-      if (row.股票代码) {
-        results.push(row);
-      }
-      // format 2: tableV1 array (单股查询格式)
-      if (row.tableV1 && Array.isArray(row.tableV1)) {
-        results.push(...row.tableV1);
-      }
-      // format 3: compound-key arrays (多股联合查询格式)
-      for (const key of Object.keys(row)) {
-        if (Array.isArray(row[key]) && key !== "tableV1") {
-          for (const item of row[key]) {
-            if (item.代码 || item.股票代码) {
-              results.push(item);
-            }
-          }
-        }
-      }
-      return results;
-    };
-
-    // 构建最新价映射（代码归一化）
+    // 数据已由 wencai.ts 归一化为扁平格式（股票代码/股票简称/最新价/最新涨跌幅）
     const priceMap: Record<string, any> = {};
     for (const row of (priceResult.data || [])) {
-      for (const item of extractFromRow(row)) {
-        const code = (item.股票代码 || item.代码 || "").replace(/\.(SZ|SH)$/i, "");
-        if (code) priceMap[code] = { ...priceMap[code], ...item };
-      }
+      const code = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+      if (code) priceMap[code] = row;
     }
 
     // 合并数据
     const enriched = stocks.map(s => {
       const lookupCode = s.stock_code.replace(/\.(SZ|SH)$/i, "");
       const p = priceMap[lookupCode] || {};
-      // 表格式可能有不同字段名
-      const currentPrice = parseFloat(p.最新价 || p["收盘价:前复权"] || p.latest_price || 0);
-      const changePct = parseFloat(p.最新涨跌幅 || p["涨跌幅:前复权"] || p.change_pct || 0);
+      const currentPrice = parseFloat(p.最新价 || 0);
+      const changePct = parseFloat(p.最新涨跌幅 || 0);
 
       return {
         stock_code: s.stock_code,
@@ -577,18 +550,18 @@ app.post("/api/alerts/check", async (_req, res) => {
     const alerts = getAlerts().filter(a => a.enabled);
     if (alerts.length === 0) return res.json({ triggered: [], message: "没有启用的告警" });
 
-    // 逐个查行情（最可靠）
+    // 逐个查行情（数据已由 wencai.ts 归一化）
     const priceMap: Record<string, { price: number; change: number }> = {};
     for (const alert of alerts) {
       try {
-        const res = await queryWencai(`${alert.stock_code} 最新价 最新涨跌幅`, 1);
-        for (const row of (res.data || [])) {
-          // tableV1 format
-          if (row.tableV1) {
-            for (const item of row.tableV1) {
-              const c = (item.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
-              if (c) priceMap[c] = { price: parseFloat(item["收盘价:前复权"] || 0), change: parseFloat(item["涨跌幅:前复权"] || 0) };
-            }
+        const result = await queryWencai(`${alert.stock_code} 最新价 最新涨跌幅`, 1);
+        for (const row of (result.data || [])) {
+          const c = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+          if (c) {
+            priceMap[c] = {
+              price: parseFloat(row.最新价 || 0),
+              change: parseFloat(row.最新涨跌幅 || 0),
+            };
           }
         }
       } catch (e) { /* skip failed */ }

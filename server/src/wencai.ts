@@ -3,6 +3,12 @@
  * 
  * Replaces the Python pywencai package with a self-contained Node.js solution.
  * Uses hexin-v.bundle.js (同花顺反爬令牌生成) + native fetch for HTTP requests.
+ * 
+ * Features:
+ * - Token caching: spawns hexin-v only once, caches and reuses
+ * - Auto-retry: on 401, regenerates token and retries once
+ * - Response normalization: all formats → flat { columns, data }
+ * - Meaningful errors: includes query text + step info
  */
 
 import { spawnSync } from "child_process";
@@ -15,17 +21,21 @@ const __dirname = path.dirname(__filename);
 const BUNDLE_PATH = path.resolve(__dirname, "hexin-v.bundle.js");
 
 // ============================================================
-// 1. Token Generation
+// 1. Token Generation (cached)
 // ============================================================
 
-function getHexinVToken(): string {
+let cachedToken: string | null = null;
+
+function getHexinVToken(refresh = false): string {
+  if (!refresh && cachedToken) return cachedToken;
+
   const result = spawnSync("node", [BUNDLE_PATH], {
     timeout: 10000,
     stdio: ["pipe", "pipe", "pipe"],
   });
 
   if (result.error) {
-    throw new Error(`Failed to generate hexin-v token: ${result.error.message}`);
+    throw new Error(`hexin-v token generation failed: ${result.error.message}`);
   }
 
   const token = result.stdout.toString().trim();
@@ -33,6 +43,7 @@ function getHexinVToken(): string {
     throw new Error("Empty hexin-v token");
   }
 
+  cachedToken = token;
   return token;
 }
 
@@ -77,6 +88,41 @@ interface RobotDataParams {
   url?: string;
 }
 
+async function fetchWencai(url: string, options: RequestInit & { queryLabel?: string, stepLabel?: string }): Promise<Response> {
+  const doFetch = async (): Promise<Response> => {
+    const res = await fetch(url, {
+      ...options,
+      signal: AbortSignal.timeout(15000),
+    });
+    return res;
+  };
+
+  let res = await doFetch();
+
+  // 401 → token expired → refresh once and retry
+  if (res.status === 401) {
+    console.warn(`[wencai] Token expired (401), refreshing...`);
+    getHexinVToken(true); // force refresh
+    // rebuild headers with new token
+    const newHeaders = options.headers as Record<string, string>;
+    if (newHeaders) {
+      newHeaders["hexin-v"] = cachedToken!;
+    }
+    res = await doFetch();
+  }
+
+  if (!res.ok) {
+    const label = options.queryLabel ? ` query="${options.queryLabel}"` : "";
+    throw new Error(`${options.stepLabel || "request"} failed: ${res.status}${label}`);
+  }
+
+  return res;
+}
+
+// ============================================================
+// 3. Step 1: get-robot-data
+// ============================================================
+
 async function getRobotData(
   query: string,
   options?: { cookie?: string; queryType?: string }
@@ -99,24 +145,21 @@ async function getRobotData(
     question: query,
   };
 
-  const response = await fetch(
+  const response = await fetchWencai(
     "http://www.iwencai.com/customized/chart/get-robot-data",
     {
       method: "POST",
       headers: headers as any,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
+      queryLabel: query,
+      stepLabel: "get-robot-data",
     }
   );
-
-  if (!response.ok) {
-    throw new Error(`get-robot-data failed: ${response.status}`);
-  }
 
   const raw = await response.json();
   const contentStr = raw?.data?.answer?.[0]?.txt?.[0]?.content;
   if (!contentStr) {
-    throw new Error("No content in get-robot-data response");
+    throw new Error(`No content in get-robot-data response (query: "${query}")`);
   }
 
   const content = typeof contentStr === "string" ? JSON.parse(contentStr) : contentStr;
@@ -182,16 +225,12 @@ async function getDataList(
   const targetUrl = "http://www.iwencai.com/gateway/urp/v7/landing/getDataList";
   const path = "answer.components.0.data.datas";
 
-  const response = await fetch(targetUrl, {
+  const response = await fetchWencai(targetUrl, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" } as any,
     body: new URLSearchParams(data).toString(),
-    signal: AbortSignal.timeout(15000),
+    stepLabel: "getDataList",
   });
-
-  if (!response.ok) {
-    throw new Error(`getDataList failed: ${response.status}`);
-  }
 
   const raw = await response.json();
   const dataList = getNestedValue(raw, path);
@@ -280,7 +319,60 @@ async function queryAll(
 }
 
 // ============================================================
-// 6. Utilities
+// 6. Response Normalization
+//    Converts all response formats into flat { columns, data }
+// ============================================================
+
+interface NormalizedRow {
+  [key: string]: any;
+}
+
+function normalizeData(rawData: any[]): NormalizedRow[] {
+  if (!rawData || rawData.length === 0) return [];
+
+  // Case 1: Row has 股票代码 directly (strategy query flat format)
+  if (rawData[0].股票代码 && typeof rawData[0].股票代码 === "string") {
+    return rawData.map(row => ({ ...row }));
+  }
+
+  // Case 2: tableV1 array (single stock code query)
+  const tableV1 = rawData[0]?.tableV1;
+  if (Array.isArray(tableV1) && tableV1.length > 0) {
+    return tableV1.map((item: any) => ({
+      股票代码: item.股票代码,
+      股票简称: item.股票简称,
+      最新价: item["收盘价:前复权"] || item.收盘价,
+      最新涨跌幅: item["涨跌幅:前复权"] || item.涨跌幅,
+    }));
+  }
+
+  // Case 3: Compound key arrays (multi-stock query)
+  // Keys look like "盐津铺子、新锐股份收盘价:不复权、涨跌幅:前复权"
+  const results: NormalizedRow[] = [];
+  for (const row of rawData) {
+    for (const key of Object.keys(row)) {
+      if (Array.isArray(row[key])) {
+        for (const item of row[key]) {
+          if (item.代码 || item.股票代码) {
+            results.push({
+              股票代码: item.代码 || item.股票代码 || "",
+              股票简称: item.名称 || item.股票简称 || "",
+              最新价: item["收盘价:前复权"] || item.收盘价 || item["收盘价:不复权"] || "",
+              最新涨跌幅: item["涨跌幅:前复权"] || item.涨跌幅 || "",
+            });
+          }
+        }
+      }
+    }
+  }
+  if (results.length > 0) return results;
+
+  // Case 4: Unknown format, return as-is
+  return rawData;
+}
+
+// ============================================================
+// 7. Public API
 // ============================================================
 
 function parseUrlParams(url: string): Record<string, string | string[]> {
@@ -431,7 +523,8 @@ export async function queryWencai(
   }
 
   try {
-    const data = await queryAll(queryStr.trim(), { limit });
+    const rawData = await queryAll(queryStr.trim(), { limit });
+    const data = normalizeData(rawData);
 
     return {
       success: true,
@@ -440,8 +533,8 @@ export async function queryWencai(
       data: data,
     };
   } catch (error: any) {
-    console.error(`[wencai] Query failed: "${queryStr}"`, error.message);
-    throw error;
+    console.error(`[wencai] ❌ Query failed: "${queryStr}" — ${error.message}`);
+    throw new Error(`查询失败: ${error.message}`);
   }
 }
 
