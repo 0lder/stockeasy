@@ -1041,6 +1041,79 @@ body {
   line-height: 1.4;
 }
 
+.snapshot-item.selected {
+  border-color: var(--blue);
+  background: rgba(0, 113, 227, 0.06);
+}
+
+/* Snapshot Toolbar */
+.snapshot-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.snapshot-hint {
+  font-size: 12px;
+  color: var(--gray-400);
+}
+
+/* Compare */
+.compare-header {
+  margin-bottom: 12px;
+}
+
+.compare-title {
+  font-size: 13px;
+  margin: 0 0 8px 0;
+  color: var(--gray-700);
+}
+
+.compare-stats-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.badge-kept {
+  background: #e8f4fd;
+  color: #0071e3;
+}
+.badge-new {
+  background: #fce8e6;
+  color: #d93025;
+}
+.badge-removed {
+  background: #e6f4ea;
+  color: #188038;
+}
+.badge-total {
+  background: #f1f3f4;
+  color: #5f6368;
+}
+
+.btn-text-sm {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: var(--gray-400);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.btn-text-sm:hover {
+  color: var(--gray-600);
+}
+
 /* ============================================================
    Snapshots (策略快照)
    ============================================================ */

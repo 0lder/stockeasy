@@ -24,6 +24,17 @@ interface SnapshotDetail {
   stats: Record<string, { up: number; total: number; ratio: string }>;
 }
 
+interface CompareResult {
+  a: { id: number; stocks: any[] };
+  b: { id: number; stocks: any[] };
+  comparison: {
+    kept: any[];
+    new: any[];
+    removed: any[];
+    stats: { kept_count: number; new_count: number; removed_count: number; total_a: number; total_b: number };
+  };
+}
+
 export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query: string) => void }): JSX.Element {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +51,11 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
   const [detailLoading, setDetailLoading] = useState(false);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [expandedStrategy, setExpandedStrategy] = useState<number | null>(null);
+
+  // Comparison
+  const [selectedSnaps, setSelectedSnaps] = useState<number[]>([]);
+  const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
 
   const fetchStrategies = async () => {
     setLoading(true);
@@ -133,6 +149,27 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
     setSnapshotDetail(null);
   };
 
+  // Comparison
+  const toggleSelectSnap = (id: number) => {
+    setSelectedSnaps((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 2) return [prev[1], id];
+      return [...prev, id];
+    });
+    setCompareResult(null);
+  };
+
+  const doCompare = async () => {
+    if (selectedSnaps.length !== 2) return;
+    setCompareLoading(true);
+    setCompareResult(null);
+    try {
+      const res = await fetch(`/api/snapshots/compare?ids=${selectedSnaps[0]},${selectedSnaps[1]}`);
+      setCompareResult(await res.json());
+    } catch (e) { console.error(e); }
+    setCompareLoading(false);
+  };
+
   // 展开/收起策略的快照
   const toggleExpand = (strategyId: number) => {
     if (expandedStrategy === strategyId) {
@@ -211,15 +248,34 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
                           <div className="snapshot-empty">暂无快照，点击 📸 保存本次结果</div>
                         ) : (
                           <>
-                            <div className="snapshot-list">
-                              {snapshots.map(snap => (
-                                <div key={snap.id} className="snapshot-item" onClick={() => handleViewSnapshot(snap.id)}>
-                                  <div className="snapshot-date">{snap.snapshot_date}</div>
-                                  <div className="snapshot-count">{snap.stock_count} 只</div>
-                                  <button className="icon-btn-sm" title="删除快照"
-                                    onClick={(e) => { e.stopPropagation(); handleDeleteSnapshot(snap.id, s.id); }}>🗑️</button>
-                                </div>
-                              ))}
+                            <div className="snapshot-toolbar">
+                              <div className="snapshot-list">
+                                {snapshots.map(snap => (
+                                  <div
+                                    key={snap.id}
+                                    className={`snapshot-item ${selectedSnaps.includes(snap.id) ? "selected" : ""}`}
+                                    onClick={() => toggleSelectSnap(snap.id)}
+                                  >
+                                    <div className="snapshot-date">{snap.snapshot_date}</div>
+                                    <div className="snapshot-count">{snap.stock_count} 只</div>
+                                    <button className="icon-btn-sm" title="查看详情"
+                                      onClick={(e) => { e.stopPropagation(); handleViewSnapshot(snap.id); }}>📊</button>
+                                    <button className="icon-btn-sm" title="删除快照"
+                                      onClick={(e) => { e.stopPropagation(); handleDeleteSnapshot(snap.id, s.id); }}>🗑️</button>
+                                  </div>
+                                ))}
+                              </div>
+                              {selectedSnaps.length === 2 && (
+                                <button className="btn btn-sm" onClick={doCompare} disabled={compareLoading}>
+                                  {compareLoading ? "对比中..." : `📊 对比 #${selectedSnaps[0]} vs #${selectedSnaps[1]}`}
+                                </button>
+                              )}
+                              {selectedSnaps.length > 0 && selectedSnaps.length < 2 && (
+                                <span className="snapshot-hint">再选 1 个快照进行对比</span>
+                              )}
+                              {selectedSnaps.length > 0 && (
+                                <button className="btn-text-sm" onClick={() => { setSelectedSnaps([]); setCompareResult(null); }}>取消选择</button>
+                              )}
                             </div>
 
                             {/* 表现详情 */}
@@ -262,6 +318,73 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
                                     })}
                                   </div>
                                 </div>
+                              </div>
+                            )}
+
+                            {/* 对比结果 */}
+                            {compareLoading && <div className="panel-loading">对比计算中...</div>}
+                            {compareResult && (
+                              <div className="snapshot-detail">
+                                <div className="compare-header">
+                                  <h4 className="compare-title">📊 快照对比 #{compareResult.a.id} vs #{compareResult.b.id}</h4>
+                                  <div className="compare-stats-row">
+                                    <span className="badge badge-kept">保留 {compareResult.comparison.stats.kept_count}</span>
+                                    <span className="badge badge-new">新增 {compareResult.comparison.stats.new_count}</span>
+                                    <span className="badge badge-removed">移除 {compareResult.comparison.stats.removed_count}</span>
+                                    <span className="badge badge-total">A: {compareResult.comparison.stats.total_a} → B: {compareResult.comparison.stats.total_b}</span>
+                                  </div>
+                                </div>
+
+                                {compareResult.comparison.kept.length > 0 && (
+                                  <>
+                                    <div className="snapshot-stocks-title">🔄 保留的股票 ({compareResult.comparison.kept.length})</div>
+                                    <div className="snapshot-stocks-grid">
+                                      {compareResult.comparison.kept.map((item: any, i: number) => {
+                                        const chg = item.price_change;
+                                        const chgNum = parseFloat(chg);
+                                        return (
+                                          <div key={i} className="snapshot-stock-card">
+                                            <div className="snap-stock-name">{item.name}</div>
+                                            <div className="snap-stock-code">{item.code}</div>
+                                            <div className="snap-stock-price">A: {item.price_a}</div>
+                                            <div className="snap-stock-price">B: {item.price_b}</div>
+                                            <div className={`snap-stock-chg ${chgNum > 0 ? "up" : chgNum < 0 ? "down" : ""}`}>{chg}</div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </>
+                                )}
+
+                                {compareResult.comparison.new.length > 0 && (
+                                  <>
+                                    <div className="snapshot-stocks-title" style={{color: "var(--red)"}}>🟢 新增的股票 ({compareResult.comparison.new.length})</div>
+                                    <div className="snapshot-stocks-grid">
+                                      {compareResult.comparison.new.map((item: any, i: number) => (
+                                        <div key={i} className="snapshot-stock-card" style={{borderColor: "var(--red)", backgroundColor: "#fff5f5"}}>
+                                          <div className="snap-stock-name">{item.name}</div>
+                                          <div className="snap-stock-code">{item.code}</div>
+                                          <div className="snap-stock-price">价格: {item.price}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </>
+                                )}
+
+                                {compareResult.comparison.removed.length > 0 && (
+                                  <>
+                                    <div className="snapshot-stocks-title" style={{color: "var(--green)"}}>🔴 移除的股票 ({compareResult.comparison.removed.length})</div>
+                                    <div className="snapshot-stocks-grid">
+                                      {compareResult.comparison.removed.map((item: any, i: number) => (
+                                        <div key={i} className="snapshot-stock-card" style={{borderColor: "var(--green)", backgroundColor: "#f5fff5"}}>
+                                          <div className="snap-stock-name">{item.name}</div>
+                                          <div className="snap-stock-code">{item.code}</div>
+                                          <div className="snap-stock-price">快照价: {item.price}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </>
+                                )}
                               </div>
                             )}
                           </>

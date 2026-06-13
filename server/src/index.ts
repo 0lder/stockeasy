@@ -180,6 +180,38 @@ app.post("/api/strategies/:id/run", async (req, res) => {
   }
 });
 
+// 自动快照 — 运行所有策略并保存快照（用于定时任务）
+app.post("/api/strategies/auto-snapshot", async (_req, res) => {
+  try {
+    const strategies = getStrategies();
+    if (strategies.length === 0) {
+      return res.json({ success: true, snapshots: [], message: "没有需要快照的策略" });
+    }
+    const results: any[] = [];
+    for (const s of strategies) {
+      try {
+        const queryRes = await queryWencai(s.query_text, 50);
+        const stocks = (queryRes.data || []).map((r: any) => ({
+          code: r.股票代码 || r.code,
+          name: r.股票简称 || r.name || "",
+          price: parseFloat(r.最新价 || 0),
+        })).filter((r: any) => r.code && r.name);
+        if (stocks.length === 0) {
+          results.push({ strategy_id: s.id, strategy_name: s.name, stocks: 0, status: "skipped" });
+          continue;
+        }
+        const snapshotId = createSnapshot(s.id, stocks);
+        results.push({ strategy_id: s.id, strategy_name: s.name, stocks: stocks.length, status: "ok", snapshot_id: snapshotId });
+      } catch (err: any) {
+        results.push({ strategy_id: s.id, strategy_name: s.name, status: "error", detail: err.message });
+      }
+    }
+    res.json({ success: true, snapshots: results });
+  } catch (error: any) {
+    res.status(500).json({ error: "自动快照失败", detail: error.message });
+  }
+});
+
 // ============================================================
 // API: Strategy Snapshots (策略快照)
 // ============================================================
@@ -230,6 +262,83 @@ app.get("/api/snapshots", (_req, res) => {
     res.json(snapshots);
   } catch (error: any) {
     res.status(500).json({ error: "获取快照列表失败", detail: error.message });
+  }
+});
+
+// 快照对比 API（必须放在 :id 路由之前）
+app.get("/api/snapshots/compare", async (req, res) => {
+  try {
+    const idsStr = req.query.ids as string;
+    if (!idsStr) return res.status(400).json({ error: "请提供要对比的快照 ID，格式 ?ids=1,2" });
+    const [idA, idB] = idsStr.split(",").map(Number);
+    if (isNaN(idA) || isNaN(idB)) return res.status(400).json({ error: "无效的快照 ID" });
+
+    const stocksA = getSnapshotStocks(idA);
+    const stocksB = getSnapshotStocks(idB);
+    if (!stocksA.length || !stocksB.length) return res.status(404).json({ error: "快照不存在" });
+
+    // 用代码查最新行情
+    const allCodes = [...new Set([...stocksA.map(s => s.stock_code), ...stocksB.map(s => s.stock_code)])];
+    const priceResult = await queryWencai(allCodes.join(" "), allCodes.length);
+
+    // 构建价格映射
+    const priceMap: Record<string, number> = {};
+    for (const row of (priceResult.data || [])) {
+      for (const key of Object.keys(row)) {
+        if (Array.isArray(row[key])) {
+          for (const item of row[key]) {
+            const c = (item.代码 || item.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+            if (c) {
+              priceMap[c] = parseFloat(item["收盘价:前复权"] || item.收盘价 || item.price || 0);
+            }
+          }
+        }
+      }
+      const c = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+      if (c && !priceMap[c]) {
+        priceMap[c] = parseFloat(row.最新价 || row.price || 0);
+      }
+    }
+
+    const normalize = (code: string) => code.replace(/\.(SZ|SH)$/i, "");
+    const mapStocks = (snaps: any[]) => snaps.map((s: any) => ({
+      code: s.stock_code, name: s.stock_name,
+      price: s.price_at_snapshot,
+      current_price: priceMap[normalize(s.stock_code)] || "-",
+    }));
+
+    const mappedA = mapStocks(stocksA);
+    const mappedB = mapStocks(stocksB);
+
+    const codeSetA = new Set(stocksA.map(s => normalize(s.stock_code)));
+    const codeSetB = new Set(stocksB.map(s => normalize(s.stock_code)));
+
+    const kept = mappedA.filter(s => codeSetB.has(normalize(s.code))).map(s => {
+      const b = mappedB.find(x => normalize(x.code) === normalize(s.code))!;
+      const priceChg = (typeof b.price === "number" && typeof s.price === "number")
+        ? ((b.price - s.price) / s.price * 100).toFixed(2) + "%"
+        : "-";
+      return { code: s.code, name: s.name, price_a: s.price, price_b: b.price, price_change: priceChg };
+    });
+
+    const newStocks = mappedB.filter(s => !codeSetA.has(normalize(s.code)));
+    const removedStocks = mappedA.filter(s => !codeSetB.has(normalize(s.code)));
+
+    res.json({
+      a: { id: idA, stocks: mappedA },
+      b: { id: idB, stocks: mappedB },
+      comparison: {
+        kept, new: newStocks, removed: removedStocks,
+        stats: {
+          kept_count: kept.length, new_count: newStocks.length,
+          removed_count: removedStocks.length,
+          total_a: stocksA.length, total_b: stocksB.length,
+        },
+      },
+    });
+  } catch (error: any) {
+    console.error("[snapshot compare]", error);
+    res.status(500).json({ error: "快照对比失败", detail: error.message });
   }
 });
 
