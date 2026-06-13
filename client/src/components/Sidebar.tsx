@@ -1,6 +1,6 @@
 import { JSX } from "react";
 
-export type TabKey = "search" | "strategies" | "watchlist" | "builder";
+export type TabKey = "search" | "strategies" | "watchlist" | "builder" | "alerts";
 
 interface TabItem {
   key: TabKey;
@@ -13,6 +13,7 @@ const TABS: TabItem[] = [
   { key: "strategies", icon: "📋", label: "策略" },
   { key: "watchlist", icon: "⭐", label: "自选" },
   { key: "builder", icon: "🔧", label: "条件" },
+  { key: "alerts", icon: "🔔", label: "告警" },
 ];
 
 interface Props {

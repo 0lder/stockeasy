@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import { queryWencai } from "./wencai.js";
-import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots } from "./database.js";
+import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist } from "./database.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -519,6 +519,114 @@ app.post("/api/watchlist/refresh", async (req, res) => {
     res.json({ data: allResults, total: allResults.length });
   } catch (error: any) {
     res.status(500).json({ error: "刷新行情失败", detail: error.message });
+  }
+});
+
+// ============================================================
+// API: Alerts (涨跌告警)
+// ============================================================
+
+// 获取所有告警
+app.get("/api/alerts", (_req, res) => {
+  try {
+    res.json(getAlerts());
+  } catch (error: any) {
+    res.status(500).json({ error: "获取告警失败", detail: error.message });
+  }
+});
+
+// 创建告警
+app.post("/api/alerts", (req, res) => {
+  try {
+    const { stock_code, stock_name, threshold_up, threshold_down } = req.body;
+    if (!stock_code || !stock_name) return res.status(400).json({ error: "请提供股票代码和名称" });
+    const id = createAlert(stock_code, stock_name, threshold_up, threshold_down);
+    res.json({ success: true, id });
+  } catch (error: any) {
+    res.status(500).json({ error: "创建告警失败", detail: error.message });
+  }
+});
+
+// 更新告警
+app.put("/api/alerts/:id", (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "无效的告警 ID" });
+    updateAlert(id, req.body);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: "更新告警失败", detail: error.message });
+  }
+});
+
+// 删除告警
+app.delete("/api/alerts/:id", (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "无效的告警 ID" });
+    deleteAlert(id);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: "删除告警失败", detail: error.message });
+  }
+});
+
+// 检查所有告警（用于定时任务）
+app.post("/api/alerts/check", async (_req, res) => {
+  try {
+    const alerts = getAlerts().filter(a => a.enabled);
+    if (alerts.length === 0) return res.json({ triggered: [], message: "没有启用的告警" });
+
+    // 逐个查行情（最可靠）
+    const priceMap: Record<string, { price: number; change: number }> = {};
+    for (const alert of alerts) {
+      try {
+        const res = await queryWencai(`${alert.stock_code} 最新价 最新涨跌幅`, 1);
+        for (const row of (res.data || [])) {
+          // tableV1 format
+          if (row.tableV1) {
+            for (const item of row.tableV1) {
+              const c = (item.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+              if (c) priceMap[c] = { price: parseFloat(item["收盘价:前复权"] || 0), change: parseFloat(item["涨跌幅:前复权"] || 0) };
+            }
+          }
+        }
+      } catch (e) { /* skip failed */ }
+    }
+
+    const triggered: any[] = [];
+    for (const alert of alerts) {
+      const code = alert.stock_code.replace(/\.(SZ|SH)$/i, "");
+      const data = priceMap[code];
+      if (!data || !data.change) continue;
+
+      const changePct = data.change;
+      if (changePct <= alert.threshold_down) {
+        triggered.push({ alert_id: alert.id, stock_code: alert.stock_code, stock_name: alert.stock_name, change: changePct, threshold: alert.threshold_down, direction: "down", current_price: data.price });
+        updateAlertTriggered(alert.id, data.price, changePct);
+      } else if (changePct >= alert.threshold_up) {
+        triggered.push({ alert_id: alert.id, stock_code: alert.stock_code, stock_name: alert.stock_name, change: changePct, threshold: alert.threshold_up, direction: "up", current_price: data.price });
+        updateAlertTriggered(alert.id, data.price, changePct);
+      }
+    }
+
+    res.json({ triggered, checked: alerts.length });
+  } catch (error: any) {
+    console.error("[alerts check]", error);
+    res.status(500).json({ error: "检查告警失败", detail: error.message });
+  }
+});
+
+// 从自选股批量创建告警
+app.post("/api/alerts/from-watchlist", (req, res) => {
+  try {
+    const items = getWatchlist();
+    const created = createAlertsFromWatchlist(
+      items.map(i => ({ code: i.stock_code, name: i.stock_name }))
+    );
+    res.json({ success: true, created });
+  } catch (error: any) {
+    res.status(500).json({ error: "从自选股创建告警失败", detail: error.message });
   }
 });
 

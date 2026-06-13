@@ -95,6 +95,22 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+    // 告警设置表
+  db.run(`
+    CREATE TABLE IF NOT EXISTS alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      threshold_up REAL DEFAULT 10.0,
+      threshold_down REAL DEFAULT -8.0,
+      enabled INTEGER DEFAULT 1,
+      last_triggered_up REAL,
+      last_triggered_down REAL,
+      created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+    )
+  `);
+
   // 保存到磁盘
   saveToDisk();
 
@@ -441,4 +457,92 @@ export function getAllSnapshots(): { id: number; strategy_id: number; strategy_n
   while (stmt.step()) rows.push(stmt.getAsObject() as any);
   stmt.free();
   return rows;
+}
+
+
+// ============================================================
+// Alerts (涨跌告警)
+// ============================================================
+
+export interface Alert {
+  id: number;
+  stock_code: string;
+  stock_name: string;
+  threshold_up: number;
+  threshold_down: number;
+  enabled: number;
+  last_triggered_up: number | null;
+  last_triggered_down: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// 获取所有告警
+export function getAlerts(): Alert[] {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM alerts ORDER BY stock_code");
+  stmt.bind([]);
+  const rows: Alert[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  stmt.free();
+  return rows;
+}
+
+// 创建告警
+export function createAlert(stockCode: string, stockName: string, thresholdUp?: number, thresholdDown?: number): number {
+  if (!db) throw new Error("Database not initialized");
+  db.run(
+    "INSERT INTO alerts (stock_code, stock_name, threshold_up, threshold_down) VALUES (?, ?, ?, ?)",
+    [stockCode, stockName, thresholdUp ?? 10.0, thresholdDown ?? -8.0]
+  );
+  const id = (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
+  saveToDisk();
+  return id;
+}
+
+// 更新告警
+export function updateAlert(id: number, updates: Partial<{ threshold_up: number; threshold_down: number; enabled: number }>): void {
+  if (!db) throw new Error("Database not initialized");
+  const fields: string[] = [];
+  const values: any[] = [];
+  if (updates.threshold_up !== undefined) { fields.push("threshold_up = ?"); values.push(updates.threshold_up); }
+  if (updates.threshold_down !== undefined) { fields.push("threshold_down = ?"); values.push(updates.threshold_down); }
+  if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled); }
+  if (fields.length === 0) return;
+  fields.push("updated_at = datetime('now', 'localtime')");
+  values.push(id);
+  db.run(`UPDATE alerts SET ${fields.join(", ")} WHERE id = ?`, values);
+  saveToDisk();
+}
+
+// 更新触发记录
+export function updateAlertTriggered(id: number, currentPrice: number, changePct: number): void {
+  if (!db) throw new Error("Database not initialized");
+  if (changePct > 0) {
+    db.run("UPDATE alerts SET last_triggered_up = ?, updated_at = datetime('now', 'localtime') WHERE id = ?", [currentPrice, id]);
+  } else {
+    db.run("UPDATE alerts SET last_triggered_down = ?, updated_at = datetime('now', 'localtime') WHERE id = ?", [currentPrice, id]);
+  }
+  saveToDisk();
+}
+
+// 删除告警
+export function deleteAlert(id: number): void {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM alerts WHERE id = ?", [id]);
+  saveToDisk();
+}
+
+// 批量从自选股创建告警（不重复）
+export function createAlertsFromWatchlist(stocks: { code: string; name: string }[]): number {
+  if (!db) throw new Error("Database not initialized");
+  let created = 0;
+  const existing = new Set(getAlerts().map(a => a.stock_code));
+  for (const s of stocks) {
+    if (!existing.has(s.code)) {
+      createAlert(s.code, s.name);
+      created++;
+    }
+  }
+  return created;
 }

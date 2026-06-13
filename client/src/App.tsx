@@ -3,6 +3,7 @@ import Sidebar, { TabKey } from "./components/Sidebar";
 import StrategyPanel from "./components/StrategyPanel";
 import WatchlistPanel from "./components/WatchlistPanel";
 import ConditionBuilder from "./components/ConditionBuilder";
+import AlertPanel from "./components/AlertPanel";
 
 // ---------- types ----------
 interface QueryResult {
@@ -253,6 +254,7 @@ export default function App(): JSX.Element {
           {activeTab === "strategies" && <StrategyPanel onRunStrategy={doSearch} />}
           {activeTab === "watchlist" && <WatchlistPanel onSearch={doSearch} />}
           {activeTab === "builder" && <ConditionBuilder onQuery={doSearch} />}
+          {activeTab === "alerts" && <AlertPanel />}
         </main>
       </div>
 
