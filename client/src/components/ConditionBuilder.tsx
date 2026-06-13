@@ -1,4 +1,29 @@
 import { JSX, useState } from "react";
+import { 
+  Box, 
+  Typography, 
+  Button, 
+  TextField, 
+  Select, 
+  MenuItem, 
+  FormControl, 
+  InputLabel, 
+  Card, 
+  CardContent, 
+  Chip, 
+  IconButton, 
+  Grid, 
+  Divider,
+  useTheme,
+  Autocomplete,
+  Tooltip
+} from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import SearchIcon from "@mui/icons-material/Search";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import BuildIcon from "@mui/icons-material/Build";
+import ClearIcon from "@mui/icons-material/Clear";
 
 interface Condition {
   field: string;
@@ -105,11 +130,17 @@ function conditionToWencai(c: Condition): string {
 }
 
 export default function ConditionBuilder({ onQuery }: { onQuery: (q: string) => void }): JSX.Element {
+  const theme = useTheme();
+  const isDarkMode = theme.palette.mode === "dark";
+  
   const [conditions, setConditions] = useState<Condition[]>([]);
   const [selectedField, setSelectedField] = useState("pe");
   const [selectedFieldLabel, setSelectedFieldLabel] = useState("市盈率 (PE)");
   const [operator, setOperator] = useState("lt");
   const [value, setValue] = useState("");
+
+  const allFields = FIELD_GROUPS.flatMap(g => g.fields);
+  const selectedFieldObj = allFields.find(f => f.id === selectedField);
 
   const addCondition = () => {
     if (!selectedField) return;
@@ -135,95 +166,206 @@ export default function ConditionBuilder({ onQuery }: { onQuery: (q: string) => 
   const isTech = TECH_FIELDS.has(selectedField);
 
   return (
-    <div className="panel">
-      <div className="panel-header">
-        <h2 className="panel-title">🔧 条件组合器</h2>
-        <div className="panel-actions">
+    <Box sx={{ maxWidth: "780px", margin: "0 auto", padding: "28px 24px 48px" }}>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "8px" }}>
+        <Typography variant="h2" sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          🔧 条件组合器
+        </Typography>
+        <Box sx={{ display: "flex", gap: "8px" }}>
           {conditions.length > 0 && (
             <>
-              <button className="btn-primary-sm" onClick={() => onQuery(queryText)}>🚀 查询</button>
-              <button className="btn-secondary-sm" onClick={clearAll}>清空</button>
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={<SearchIcon />}
+                onClick={() => onQuery(queryText)}
+                sx={{ borderRadius: "999px" }}
+              >
+                查询
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<ClearIcon />}
+                onClick={clearAll}
+                sx={{ borderRadius: "999px" }}
+              >
+                清空
+              </Button>
             </>
           )}
-        </div>
-      </div>
+        </Box>
+      </Box>
 
       {/* 条件添加区 */}
-      <div className="builder-add-row">
-        <select className="input builder-select" value={selectedField} onChange={e => {
-          const opt = e.target.selectedOptions[0];
-          setSelectedField(e.target.value);
-          setSelectedFieldLabel(opt.textContent || e.target.value);
-        }}>
-          {FIELD_GROUPS.map(g => (
-            <optgroup key={g.label} label={g.label}>
-              {g.fields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-            </optgroup>
-          ))}
-        </select>
+      <Card sx={{ marginBottom: "20px", borderRadius: "12px" }}>
+        <CardContent sx={{ display: "flex", flexDirection: "column", gap: "12px", padding: "16px" }}>
+          <Box sx={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+            <FormControl sx={{ minWidth: 200 }} size="small">
+              <InputLabel>选择指标</InputLabel>
+              <Select
+                value={selectedField}
+                label="选择指标"
+                onChange={e => {
+                  setSelectedField(e.target.value);
+                  const field = allFields.find(f => f.id === e.target.value);
+                  setSelectedFieldLabel(field?.label || e.target.value);
+                }}
+              >
+                {FIELD_GROUPS.map(g => (
+                  <Box key={g.label}>
+                    <Typography variant="caption" sx={{ 
+                      padding: "8px 16px", 
+                      display: "block", 
+                      color: "text.secondary",
+                      fontWeight: 600 
+                    }}>
+                      {g.label}
+                    </Typography>
+                    {g.fields.map(f => (
+                      <MenuItem key={f.id} value={f.id}>{f.label}</MenuItem>
+                    ))}
+                    <Divider />
+                  </Box>
+                ))}
+              </Select>
+            </FormControl>
 
-        {!isTech && (
-          <select className="input builder-select" value={operator} onChange={e => setOperator(e.target.value)}>
-            {OPERATORS.map(op => <option key={op.id} value={op.id}>{op.label}</option>)}
-          </select>
-        )}
+            {!isTech && (
+              <FormControl sx={{ minWidth: 150 }} size="small">
+                <InputLabel>运算符</InputLabel>
+                <Select
+                  value={operator}
+                  label="运算符"
+                  onChange={e => setOperator(e.target.value)}
+                >
+                  {OPERATORS.map(op => (
+                    <MenuItem key={op.id} value={op.id}>{op.label}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
 
-        {!isTech && (
-          <input className="input builder-input" placeholder={operator === "between" ? "最小值,最大值" : "数值"} value={value} onChange={e => setValue(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") addCondition(); }} />
-        )}
+            {!isTech && (
+              <TextField
+                size="small"
+                label={operator === "between" ? "最小值,最大值" : "数值"}
+                value={value}
+                onChange={e => setValue(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") addCondition(); }}
+                sx={{ minWidth: 120 }}
+              />
+            )}
 
-        <button className="btn-primary-sm" onClick={addCondition} disabled={!isTech && !value.trim()}>+ 添加</button>
-      </div>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={addCondition}
+              disabled={!isTech && !value.trim()}
+              sx={{ borderRadius: "999px" }}
+            >
+              添加
+            </Button>
+          </Box>
+        </CardContent>
+      </Card>
 
       {/* 已选条件列表 */}
       {conditions.length > 0 && (
-        <div className="builder-conditions">
-          <div className="builder-query-preview">
-            <span className="builder-preview-label">生成的问财语句：</span>
-            <span className="builder-preview-text">{queryText}</span>
-          </div>
-          <div className="builder-chips">
-            {conditions.map((c, i) => (
-              <div key={i} className="builder-chip">
-                <span className="builder-chip-text">{conditionToWencai(c)}</span>
-                <button className="builder-chip-del" onClick={() => removeCondition(i)}>✕</button>
-                {i < conditions.length - 1 && <span className="builder-and">且</span>}
-              </div>
-            ))}
-          </div>
-          <div className="builder-actions">
-            <button className="btn-primary-sm" onClick={() => onQuery(queryText)}>🚀 执行查询</button>
-          </div>
-        </div>
+        <Card sx={{ marginBottom: "20px", borderRadius: "12px" }}>
+          <CardContent sx={{ padding: "16px" }}>
+            <Box sx={{ marginBottom: "12px" }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, color: "text.secondary", marginBottom: "6px", display: "block" }}>
+                生成的问财语句：
+              </Typography>
+              <Typography variant="body2" sx={{ 
+                padding: "8px 12px", 
+                backgroundColor: isDarkMode ? "#2c2c2e" : "#f5f5f7", 
+                borderRadius: "8px",
+                fontFamily: "monospace",
+                wordBreak: "break-all"
+              }}>
+                {queryText}
+              </Typography>
+            </Box>
+            
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "16px" }}>
+              {conditions.map((c, i) => (
+                <Chip
+                  key={i}
+                  label={conditionToWencai(c)}
+                  onDelete={() => removeCondition(i)}
+                  color="primary"
+                  variant="outlined"
+                  sx={{ borderRadius: "999px" }}
+                />
+              ))}
+            </Box>
+            
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<PlayArrowIcon />}
+              onClick={() => onQuery(queryText)}
+              sx={{ borderRadius: "999px" }}
+            >
+              执行查询
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {conditions.length === 0 && (
-        <div className="panel-empty">
-          <p>选择条件和数值，组合成问财查询语句</p>
-          <p className="panel-hint">支持估值、成长、财务、行情、技术面多种条件</p>
-        </div>
+        <Box sx={{ textAlign: "center", padding: "48px 20px", color: "text.secondary" }}>
+          <Typography>选择条件和数值，组合成问财查询语句</Typography>
+          <Typography variant="body2" sx={{ marginTop: "8px", color: "text.secondary" }}>
+            支持估值、成长、财务、行情、技术面多种条件
+          </Typography>
+        </Box>
       )}
 
       {/* 常用模板 */}
-      <div className="builder-templates">
-        <div className="strategy-group-title">📌 常用模板</div>
-        <div className="templates-grid">
-          {[
-            { name: "低估值蓝筹", query: "市盈率小于15 市净率小于2 股息率大于3%" },
-            { name: "高成长小盘", query: "净利润增长率大于50% 总市值小于100亿 市盈率大于0" },
-            { name: "MACD金叉", query: "MACD金叉 换手率大于3%" },
-            { name: "放量突破", query: "放量突破 涨跌幅大于5%" },
-            { name: "白马股", query: "ROE大于15% 毛利率大于30% 净利润增长率大于20%" },
-            { name: "破净股", query: "市净率小于1 市盈率大于0" },
-          ].map(t => (
-            <button key={t.name} className="template-chip" onClick={() => onQuery(t.query)}>
-              <span className="template-name">{t.name}</span>
-              <span className="template-desc">{t.query}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
+      <Card sx={{ borderRadius: "12px" }}>
+        <CardContent sx={{ padding: "16px" }}>
+          <Typography variant="h6" sx={{ marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px" }}>
+            📌 常用模板
+          </Typography>
+          <Grid container spacing={2}>
+            {[
+              { name: "低估值蓝筹", query: "市盈率小于15 市净率小于2 股息率大于3%" },
+              { name: "高成长小盘", query: "净利润增长率大于50% 总市值小于100亿 市盈率大于0" },
+              { name: "MACD金叉", query: "MACD金叉 换手率大于3%" },
+              { name: "放量突破", query: "放量突破 涨跌幅大于5%" },
+              { name: "白马股", query: "ROE大于15% 毛利率大于30% 净利润增长率大于20%" },
+              { name: "破净股", query: "市净率小于1 市盈率大于0" },
+            ].map(t => (
+              <Grid item xs={12} sm={6} md={4} key={t.name}>
+                <Card 
+                  sx={{ 
+                    cursor: "pointer", 
+                    "&:hover": { 
+                      backgroundColor: "action.hover",
+                      borderColor: "primary.main"
+                    },
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: "8px"
+                  }}
+                  onClick={() => onQuery(t.query)}
+                >
+                  <CardContent sx={{ padding: "12px", "&:last-child": { paddingBottom: "12px" } }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: "4px" }}>
+                      {t.name}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                      {t.query}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            ))}
+          </Grid>
+        </CardContent>
+      </Card>
+    </Box>
   );
 }

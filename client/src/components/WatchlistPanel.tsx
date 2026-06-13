@@ -1,4 +1,33 @@
 import { JSX, useState, useEffect, useCallback } from "react";
+import { 
+  Box, 
+  Typography, 
+  Button, 
+  TextField, 
+  Select, 
+  MenuItem, 
+  FormControl, 
+  InputLabel, 
+  Card, 
+  CardContent, 
+  Chip, 
+  IconButton, 
+  CircularProgress, 
+  Collapse, 
+  Divider,
+  useTheme,
+  Tooltip,
+  Badge
+} from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import DownloadIcon from "@mui/icons-material/Download";
+import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
+import NotificationsIcon from "@mui/icons-material/Notifications";
+import SearchIcon from "@mui/icons-material/Search";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 
 interface WatchItem {
   id: number;
@@ -29,6 +58,9 @@ interface PriceInfo {
 }
 
 export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => void }): JSX.Element {
+  const theme = useTheme();
+  const isDarkMode = theme.palette.mode === "dark";
+  
   const [items, setItems] = useState<WatchItem[]>([]);
   const [groups, setGroups] = useState<string[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -41,7 +73,6 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
   const [group, setGroup] = useState("默认");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editNote, setEditNote] = useState("");
-  // Alert editing
   const [alertForm, setAlertForm] = useState<Record<number, { show: boolean; up: string; down: string }>>({});
 
   const fetchWatchlist = useCallback(async () => {
@@ -132,7 +163,6 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
     fetchWatchlist();
   };
 
-  // Alert handlers
   const toggleAlertForm = (watchId: number, stockCode: string) => {
     const existing = alerts.find(a => a.stock_code === stockCode);
     setAlertForm(prev => ({
@@ -182,7 +212,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
   const formatChange = (v: any) => {
     if (v === undefined || v === null) return null;
     const n = Number(v);
-    return { text: `${n > 0 ? "+" : ""}${n.toFixed(2)}%`, color: n > 0 ? "#ff3b30" : n < 0 ? "#34c759" : "#8e8e93" };
+    return { text: `${n > 0 ? "+" : ""}${n.toFixed(2)}%`, color: n > 0 ? "error.main" : n < 0 ? "success.main" : "text.secondary" };
   };
 
   const groupMap = new Map<string, WatchItem[]>();
@@ -192,115 +222,272 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
   });
 
   return (
-    <div className="panel">
-      <div className="panel-header">
-        <h2 className="panel-title">⭐ 自选股</h2>
-        <div className="panel-actions">
-          <button className="btn-primary-sm" onClick={() => { setShowAdd(!showAdd); }}>{showAdd ? "取消" : "+ 添加"}</button>
-          <button className="btn-secondary-sm" onClick={refreshPrices} disabled={refreshing}>
-            {refreshing ? "刷新中..." : "🔄 刷新行情"}
-          </button>
-          <button className="btn-secondary-sm" onClick={exportWatchlist}>⬇ 导出</button>
-        </div>
-      </div>
+    <Box sx={{ maxWidth: "780px", margin: "0 auto", padding: "28px 24px 48px" }}>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "8px" }}>
+        <Typography variant="h2" sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          ⭐ 自选股
+        </Typography>
+        <Box sx={{ display: "flex", gap: "8px" }}>
+          <Button
+            variant="contained"
+            color="primary"
+            startIcon={showAdd ? null : <AddIcon />}
+            onClick={() => setShowAdd(!showAdd)}
+            sx={{ borderRadius: "999px" }}
+          >
+            {showAdd ? "取消" : "添加"}
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshIcon />}
+            onClick={refreshPrices}
+            disabled={refreshing}
+            sx={{ borderRadius: "999px" }}
+          >
+            {refreshing ? "刷新中..." : "刷新行情"}
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={exportWatchlist}
+            sx={{ borderRadius: "999px" }}
+          >
+            导出
+          </Button>
+        </Box>
+      </Box>
 
       {showAdd && (
-        <div className="strategy-form">
-          <input className="input" placeholder="股票代码 *（如 600519）" value={code} onChange={e => setCode(e.target.value)} />
-          <input className="input" placeholder="股票名称 *（如 贵州茅台）" value={sname} onChange={e => setSname(e.target.value)} />
-          <select className="input" value={group} onChange={e => setGroup(e.target.value)}>
-            <option>默认</option><option>核心持仓</option><option>观察仓</option><option>ETF</option>
-            {groups.filter(g => !["默认","核心持仓","观察仓","ETF"].includes(g)).map(g => <option key={g}>{g}</option>)}
-          </select>
-          <button className="btn-primary-sm" onClick={handleAdd}>添加</button>
-        </div>
+        <Card sx={{ marginBottom: "20px", borderRadius: "12px" }}>
+          <CardContent sx={{ display: "flex", flexDirection: "column", gap: "10px", padding: "16px" }}>
+            <TextField
+              fullWidth
+              label="股票代码 *（如 600519）"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              size="small"
+            />
+            <TextField
+              fullWidth
+              label="股票名称 *（如 贵州茅台）"
+              value={sname}
+              onChange={e => setSname(e.target.value)}
+              size="small"
+            />
+            <FormControl fullWidth size="small">
+              <InputLabel>分组</InputLabel>
+              <Select
+                value={group}
+                label="分组"
+                onChange={e => setGroup(e.target.value)}
+              >
+                <MenuItem value="默认">默认</MenuItem>
+                <MenuItem value="核心持仓">核心持仓</MenuItem>
+                <MenuItem value="观察仓">观察仓</MenuItem>
+                <MenuItem value="ETF">ETF</MenuItem>
+                {groups.filter(g => !["默认","核心持仓","观察仓","ETF"].includes(g)).map(g => (
+                  <MenuItem key={g} value={g}>{g}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={handleAdd}
+              sx={{ borderRadius: "999px", alignSelf: "flex-start" }}
+            >
+              添加
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {loading ? (
-        <div className="panel-loading">加载中...</div>
+        <Box sx={{ textAlign: "center", padding: "48px" }}>
+          <CircularProgress size={40} sx={{ marginBottom: "12px" }} />
+          <Typography color="text.secondary">加载中...</Typography>
+        </Box>
       ) : items.length === 0 ? (
-        <div className="panel-empty">
-          <p>自选股列表为空</p>
-          <p className="panel-hint">添加股票到自选股，随时查看行情</p>
-        </div>
+        <Box sx={{ textAlign: "center", padding: "48px 20px", color: "text.secondary" }}>
+          <Typography>自选股列表为空</Typography>
+          <Typography variant="body2" sx={{ marginTop: "8px", color: "text.secondary" }}>
+            添加股票到自选股，随时查看行情
+          </Typography>
+        </Box>
       ) : (
-        <div className="watchlist-scroll">
+        <Box>
           {[...groupMap.entries()].map(([g, gItems]) => (
-            <div key={g} className="strategy-group">
-              <div className="strategy-group-title">{g} ({gItems.length})</div>
+            <Box key={g} sx={{ marginBottom: "20px" }}>
+              <Typography variant="caption" sx={{ 
+                fontWeight: 600, 
+                color: "text.secondary", 
+                textTransform: "uppercase", 
+                letterSpacing: "0.04em", 
+                marginBottom: "8px", 
+                padding: "0 2px" 
+              }}>
+                {g} ({gItems.length})
+              </Typography>
               {gItems.map(item => {
                 const price = prices[item.stock_code];
                 const change = price ? formatChange(price["最新涨跌幅"]) : null;
                 const alert = alerts.find(a => a.stock_code === item.stock_code);
                 const af = alertForm[item.id];
                 return (
-                  <div key={item.id} className="watchlist-item">
-                    <div className="watchlist-item-info" onClick={() => onSearch(item.stock_name)}>
-                      <div className="watchlist-item-name">
-                        {item.stock_name}
-                        <span className="watchlist-item-code">{item.stock_code}</span>
-                      </div>
-                      {item.note && <div className="watchlist-item-note">{item.note}</div>}
-                      {alert && (
-                        <div className="watchlist-item-alert-badge">
-                          🔔 {alert.threshold_up > 0 ? `涨${alert.threshold_up}%` : ""}
-                          {alert.threshold_down < 0 ? ` 跌${Math.abs(alert.threshold_down)}%` : ""}
-                        </div>
-                      )}
-                    </div>
-                    <div className="watchlist-item-price">
-                      {price ? (
-                        <>
-                          <div className="watchlist-price-val">{formatPrice(price["最新价"])}</div>
-                          {change && <div className="watchlist-price-chg" style={{ color: change.color }}>{change.text}</div>}
-                        </>
-                      ) : (
-                        <button className="btn-link" onClick={refreshPrices}>加载</button>
-                      )}
-                    </div>
-                    <div className="watchlist-item-actions">
-                      <button className="icon-btn-sm" title="告警设置"
-                        onClick={() => toggleAlertForm(item.id, item.stock_code)}
-                        style={{ color: alert ? "#ff9500" : "#8e8e93" }}>
-                        🔔
-                      </button>
-                      <select className="group-select" value={item.group_name} onChange={e => handleGroupChange(item.id, e.target.value)}>
-                        <option>默认</option><option>核心持仓</option><option>观察仓</option><option>ETF</option>
-                      </select>
-                      <button className="icon-btn-sm" title="删除" onClick={() => handleDelete(item.id)}>✕</button>
-                    </div>
-                    {af?.show && (
-                      <div className="alert-form">
-                        <div className="alert-form-row">
-                          <label>涨超 %</label>
-                          <input className="input input-sm" type="number" value={af.up}
-                            onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], up: e.target.value } }))} />
-                        </div>
-                        <div className="alert-form-row">
-                          <label>跌超 %</label>
-                          <input className="input input-sm" type="number" value={af.down}
-                            onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], down: e.target.value } }))} />
-                        </div>
-                        <div className="alert-form-actions">
-                          <button className="btn-primary-sm" onClick={() => saveAlert(item.id, item.stock_code, item.stock_name)}>保存</button>
-                          {alert && <button className="btn-text-sm" onClick={() => deleteAlert(item.stock_code)}>删除告警</button>}
-                          <button className="btn-text-sm" onClick={() => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], show: false } }))}>取消</button>
-                        </div>
+                  <Card key={item.id} sx={{ 
+                    marginBottom: "6px", 
+                    borderRadius: "8px", 
+                    border: "1px solid", 
+                    borderColor: "divider",
+                    "&:hover": { 
+                      backgroundColor: "action.hover", 
+                      borderColor: "action.hover" 
+                    }
+                  }}>
+                    <CardContent sx={{ 
+                      display: "flex", 
+                      alignItems: "center", 
+                      justifyContent: "space-between", 
+                      padding: "12px 14px", 
+                      "&:last-child": { paddingBottom: "12px" } 
+                    }}>
+                      <Box 
+                        sx={{ flex: 1, minWidth: 0, cursor: "pointer" }} 
+                        onClick={() => onSearch(item.stock_name)}
+                      >
+                        <Box sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                            {item.stock_name}
+                          </Typography>
+                          <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                            {item.stock_code}
+                          </Typography>
+                        </Box>
+                        {item.note && (
+                          <Typography variant="caption" sx={{ color: "text.secondary", marginTop: "2px" }}>
+                            {item.note}
+                          </Typography>
+                        )}
+                        {alert && (
+                          <Chip
+                            size="small"
+                            label={`🔔 ${alert.threshold_up > 0 ? `涨${alert.threshold_up}%` : ""}${alert.threshold_down < 0 ? ` 跌${Math.abs(alert.threshold_down)}%` : ""}`}
+                            sx={{ marginTop: "4px", fontSize: "11px" }}
+                          />
+                        )}
+                      </Box>
+                      
+                      <Box sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        {price ? (
+                          <Box sx={{ textAlign: "right" }}>
+                            <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                              {formatPrice(price["最新价"])}
+                            </Typography>
+                            {change && (
+                              <Typography variant="caption" sx={{ color: change.color, fontWeight: 500 }}>
+                                {change.text}
+                              </Typography>
+                            )}
+                          </Box>
+                        ) : (
+                          <Button size="small" onClick={refreshPrices}>
+                            加载
+                          </Button>
+                        )}
+                        
+                        <Tooltip title="告警设置">
+                          <IconButton 
+                            size="small" 
+                            onClick={() => toggleAlertForm(item.id, item.stock_code)}
+                            sx={{ color: alert ? "warning.main" : "text.secondary" }}
+                          >
+                            <NotificationsIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        
+                        <FormControl size="small" sx={{ minWidth: 80 }}>
+                          <Select
+                            value={item.group_name}
+                            onChange={e => handleGroupChange(item.id, e.target.value)}
+                            size="small"
+                            sx={{ fontSize: "12px" }}
+                          >
+                            <MenuItem value="默认">默认</MenuItem>
+                            <MenuItem value="核心持仓">核心持仓</MenuItem>
+                            <MenuItem value="观察仓">观察仓</MenuItem>
+                            <MenuItem value="ETF">ETF</MenuItem>
+                          </Select>
+                        </FormControl>
+                        
+                        <Tooltip title="删除">
+                          <IconButton size="small" onClick={() => handleDelete(item.id)}>
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    </CardContent>
+                    
+                    <Collapse in={af?.show}>
+                      <Box sx={{ padding: "12px 14px", borderTop: "1px solid", borderColor: "divider" }}>
+                        <Box sx={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "8px" }}>
+                          <Typography variant="caption" sx={{ color: "text.secondary" }}>涨超 %</Typography>
+                          <TextField
+                            size="small"
+                            type="number"
+                            value={af?.up || ""}
+                            onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], up: e.target.value } }))}
+                            sx={{ width: 80 }}
+                          />
+                          <Typography variant="caption" sx={{ color: "text.secondary" }}>跌超 %</Typography>
+                          <TextField
+                            size="small"
+                            type="number"
+                            value={af?.down || ""}
+                            onChange={e => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], down: e.target.value } }))}
+                            sx={{ width: 80 }}
+                          />
+                        </Box>
+                        <Box sx={{ display: "flex", gap: "8px" }}>
+                          <Button 
+                            variant="contained" 
+                            size="small" 
+                            onClick={() => saveAlert(item.id, item.stock_code, item.stock_name)}
+                          >
+                            保存
+                          </Button>
+                          {alert && (
+                            <Button 
+                              variant="text" 
+                              size="small" 
+                              color="error"
+                              onClick={() => deleteAlert(item.stock_code)}
+                            >
+                              删除告警
+                            </Button>
+                          )}
+                          <Button 
+                            variant="text" 
+                            size="small" 
+                            onClick={() => setAlertForm(prev => ({ ...prev, [item.id]: { ...prev[item.id], show: false } }))}
+                          >
+                            取消
+                          </Button>
+                        </Box>
                         {alert && (alert.last_triggered_up || alert.last_triggered_down) && (
-                          <div className="alert-triggered-info">
+                          <Typography variant="caption" sx={{ color: "text.secondary", marginTop: "8px", display: "block" }}>
                             上次触发: {alert.last_triggered_up && `涨 @${alert.last_triggered_up}`}
                             {alert.last_triggered_down && ` 跌 @${alert.last_triggered_down}`}
-                          </div>
+                          </Typography>
                         )}
-                      </div>
-                    )}
-                  </div>
+                      </Box>
+                    </Collapse>
+                  </Card>
                 );
               })}
-            </div>
+            </Box>
           ))}
-        </div>
+        </Box>
       )}
-    </div>
+    </Box>
   );
 }

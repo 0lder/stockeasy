@@ -1,4 +1,33 @@
 import { JSX, useState, useEffect } from "react";
+import { 
+  Box, 
+  Typography, 
+  Button, 
+  TextField, 
+  Card, 
+  CardContent, 
+  Chip, 
+  IconButton, 
+  CircularProgress, 
+  Switch, 
+  FormControlLabel, 
+  Divider, 
+  useTheme,
+  Alert,
+  Tooltip,
+  Grid
+} from "@mui/material";
+import NotificationsIcon from "@mui/icons-material/Notifications";
+import EditIcon from "@mui/icons-material/Edit";
+import DeleteIcon from "@mui/icons-material/Delete";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import PauseIcon from "@mui/icons-material/Pause";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import WarningIcon from "@mui/icons-material/Warning";
+import SyncIcon from "@mui/icons-material/Sync";
+import SaveIcon from "@mui/icons-material/Save";
+import CancelIcon from "@mui/icons-material/Cancel";
+import DownloadIcon from "@mui/icons-material/Download";
 
 interface Alert {
   id: number;
@@ -13,6 +42,9 @@ interface Alert {
 }
 
 export default function AlertPanel(): JSX.Element {
+  const theme = useTheme();
+  const isDarkMode = theme.palette.mode === "dark";
+  
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -39,7 +71,7 @@ export default function AlertPanel(): JSX.Element {
       const res = await fetch("/api/alerts/check", { method: "POST" });
       const data = await res.json();
       setCheckResult(data);
-      fetchAlerts(); // refresh last_triggered
+      fetchAlerts();
     } catch (e) { console.error(e); }
     setChecking(false);
   };
@@ -86,100 +118,213 @@ export default function AlertPanel(): JSX.Element {
   };
 
   return (
-    <div className="panel">
-      <div className="panel-header">
-        <div className="panel-title">🔔 涨跌告警</div>
-        <div className="panel-subtitle">监控自选股涨跌，超阈值自动通知</div>
-      </div>
-
-      <div className="panel-actions" style={{ display: "flex", gap: 8, padding: "0 14px 12px" }}>
-        <button className="btn btn-sm btn-secondary-sm" onClick={handleCheck} disabled={checking}>
-          {checking ? "检查中..." : "🔄 检查告警"}
-        </button>
-        <button className="btn btn-sm btn-secondary-sm" onClick={handleImportFromWatchlist}>
-          📥 从自选股导入
-        </button>
-      </div>
+    <Box sx={{ maxWidth: "780px", margin: "0 auto", padding: "28px 24px 48px" }}>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "8px" }}>
+        <Box>
+          <Typography variant="h2" sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            🔔 涨跌告警
+          </Typography>
+          <Typography variant="body2" sx={{ color: "text.secondary", marginTop: "4px" }}>
+            监控自选股涨跌，超阈值自动通知
+          </Typography>
+        </Box>
+        <Box sx={{ display: "flex", gap: "8px" }}>
+          <Button
+            variant="contained"
+            color="primary"
+            startIcon={checking ? <CircularProgress size={16} /> : <SyncIcon />}
+            onClick={handleCheck}
+            disabled={checking}
+            sx={{ borderRadius: "999px" }}
+          >
+            {checking ? "检查中..." : "检查告警"}
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleImportFromWatchlist}
+            sx={{ borderRadius: "999px" }}
+          >
+            从自选股导入
+          </Button>
+        </Box>
+      </Box>
 
       {checkResult && (
-        <div className="panel-section" style={{ margin: "0 14px 12px", padding: 10, background: "var(--gray-50)", borderRadius: 8, border: "1px solid var(--gray-100)" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>检查结果</div>
-          <div style={{ fontSize: 12, color: "var(--gray-500)" }}>
+        <Alert 
+          severity={checkResult.triggered?.length > 0 ? "warning" : "success"}
+          sx={{ marginBottom: "20px", borderRadius: "12px" }}
+        >
+          <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: "4px" }}>
+            检查结果
+          </Typography>
+          <Typography variant="body2">
             检查 {checkResult.checked} 条告警
             {checkResult.triggered?.length > 0
               ? `，${checkResult.triggered.length} 条触发 🔔`
               : "，无触发 ✅"}
-          </div>
-          {checkResult.triggered?.map((t: any, i: number) => (
-            <div key={i} style={{ fontSize: 12, marginTop: 4, padding: "4px 8px", background: "white", borderRadius: 4 }}>
-              <span style={{ fontWeight: 600 }}>{t.stock_name}</span>
-              <span style={{ color: t.direction === "down" ? "var(--green)" : "var(--red)" }}>
-                {" "}{t.change > 0 ? "+" : ""}{t.change.toFixed(2)}%
-              </span>
-              <span style={{ color: "var(--gray-400)" }}> (阈值: {t.direction === "down" ? "跌破" : "涨超"}{t.threshold}%)</span>
-            </div>
-          ))}
-        </div>
+          </Typography>
+          {checkResult.triggered?.length > 0 && (
+            <Box sx={{ marginTop: "8px" }}>
+              {checkResult.triggered.map((t: any, i: number) => (
+                <Box key={i} sx={{ 
+                  display: "flex", 
+                  alignItems: "center", 
+                  gap: "8px", 
+                  padding: "4px 8px", 
+                  backgroundColor: isDarkMode ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.02)",
+                  borderRadius: "4px",
+                  marginBottom: "4px"
+                }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    {t.stock_name}
+                  </Typography>
+                  <Typography variant="body2" sx={{ color: t.direction === "down" ? "success.main" : "error.main" }}>
+                    {t.change > 0 ? "+" : ""}{t.change.toFixed(2)}%
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                    (阈值: {t.direction === "down" ? "跌破" : "涨超"}{t.threshold}%)
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </Alert>
       )}
 
       {loading ? (
-        <div className="panel-loading">加载中...</div>
+        <Box sx={{ textAlign: "center", padding: "48px" }}>
+          <CircularProgress size={40} sx={{ marginBottom: "12px" }} />
+          <Typography color="text.secondary">加载中...</Typography>
+        </Box>
       ) : alerts.length === 0 ? (
-        <div className="panel-empty">
-          <p>暂无告警设置</p>
-          <p style={{ fontSize: 12, color: "var(--gray-400)", marginTop: 4 }}>点击「从自选股导入」快速添加</p>
-        </div>
+        <Box sx={{ textAlign: "center", padding: "48px 20px", color: "text.secondary" }}>
+          <Typography>暂无告警设置</Typography>
+          <Typography variant="body2" sx={{ marginTop: "8px", color: "text.secondary" }}>
+            点击「从自选股导入」快速添加
+          </Typography>
+        </Box>
       ) : (
-        <div className="panel-section" style={{ padding: "0 14px" }}>
+        <Box>
           {alerts.map((a) => (
-            <div key={a.id} className="watchlist-item" style={{ opacity: a.enabled ? 1 : 0.5 }}>
-              <div className="watchlist-stock-info" style={{ flex: 1 }}>
-                <div className="watchlist-stock-name">{a.stock_name}</div>
-                <div className="watchlist-stock-code">{a.stock_code}</div>
-              </div>
-
-              {editingId === a.id ? (
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "var(--gray-400)" }}>涨超</span>
-                  <input
-                    type="number"
-                    value={editUp}
-                    onChange={e => setEditUp(e.target.value)}
-                    style={{ width: 48, fontSize: 11, padding: "2px 4px", textAlign: "center" }}
-                  />
-                  <span style={{ fontSize: 11, color: "var(--gray-400)" }}>%</span>
-                  <span style={{ fontSize: 11, color: "var(--gray-400)", marginLeft: 4 }}>跌破</span>
-                  <input
-                    type="number"
-                    value={editDown}
-                    onChange={e => setEditDown(e.target.value)}
-                    style={{ width: 48, fontSize: 11, padding: "2px 4px", textAlign: "center" }}
-                  />
-                  <span style={{ fontSize: 11, color: "var(--gray-400)" }}>%</span>
-                  <button className="icon-btn-sm" onClick={() => saveEdit(a.id)}>💾</button>
-                  <button className="icon-btn-sm" onClick={() => setEditingId(null)}>❌</button>
-                </div>
-              ) : (
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <span className={`badge ${a.threshold_up > 0 ? "badge-kept" : ""}`}
-                    style={{ fontSize: 11, padding: "2px 6px" }}>
-                    ↑{a.threshold_up}%
-                  </span>
-                  <span className={`badge ${a.threshold_down < 0 ? "badge-removed" : ""}`}
-                    style={{ fontSize: 11, padding: "2px 6px" }}>
-                    ↓{a.threshold_down}%
-                  </span>
-                  <button className="icon-btn-sm" title="编辑" onClick={() => startEdit(a)}>✏️</button>
-                  <button className="icon-btn-sm" title={a.enabled ? "暂停" : "启用"} onClick={() => handleToggleEnabled(a)}>
-                    {a.enabled ? "⏸️" : "▶️"}
-                  </button>
-                  <button className="icon-btn-sm" title="删除" onClick={() => handleDelete(a.id)}>🗑️</button>
-                </div>
-              )}
-            </div>
+            <Card key={a.id} sx={{ 
+              marginBottom: "8px", 
+              borderRadius: "8px", 
+              border: "1px solid", 
+              borderColor: "divider",
+              opacity: a.enabled ? 1 : 0.6,
+              "&:hover": { 
+                backgroundColor: "action.hover", 
+                borderColor: "action.hover" 
+              }
+            }}>
+              <CardContent sx={{ 
+                display: "flex", 
+                alignItems: "center", 
+                justifyContent: "space-between", 
+                padding: "12px 14px", 
+                "&:last-child": { paddingBottom: "12px" } 
+              }}>
+                <Box sx={{ flex: 1 }}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                      {a.stock_name}
+                    </Typography>
+                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                      {a.stock_code}
+                    </Typography>
+                    {!a.enabled && (
+                      <Chip 
+                        size="small" 
+                        label="已暂停" 
+                        sx={{ fontSize: "11px" }}
+                      />
+                    )}
+                  </Box>
+                  
+                  {editingId === a.id ? (
+                    <Box sx={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>涨超</Typography>
+                      <TextField
+                        size="small"
+                        type="number"
+                        value={editUp}
+                        onChange={e => setEditUp(e.target.value)}
+                        sx={{ width: 70 }}
+                      />
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>%</Typography>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>跌破</Typography>
+                      <TextField
+                        size="small"
+                        type="number"
+                        value={editDown}
+                        onChange={e => setEditDown(e.target.value)}
+                        sx={{ width: 70 }}
+                      />
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>%</Typography>
+                      <Tooltip title="保存">
+                        <IconButton size="small" onClick={() => saveEdit(a.id)}>
+                          <SaveIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="取消">
+                        <IconButton size="small" onClick={() => setEditingId(null)}>
+                          <CancelIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </Box>
+                  ) : (
+                    <Box sx={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "8px" }}>
+                      <Chip 
+                        size="small" 
+                        label={`↑${a.threshold_up}%`}
+                        color={a.threshold_up > 0 ? "error" : "default"}
+                        variant="outlined"
+                        sx={{ fontSize: "11px" }}
+                      />
+                      <Chip 
+                        size="small" 
+                        label={`↓${a.threshold_down}%`}
+                        color={a.threshold_down < 0 ? "success" : "default"}
+                        variant="outlined"
+                        sx={{ fontSize: "11px" }}
+                      />
+                      {a.last_triggered_up && (
+                        <Typography variant="caption" sx={{ color: "text.secondary", marginLeft: "8px" }}>
+                          上次涨触发: {a.last_triggered_up}
+                        </Typography>
+                      )}
+                      {a.last_triggered_down && (
+                        <Typography variant="caption" sx={{ color: "text.secondary", marginLeft: "8px" }}>
+                          上次跌触发: {a.last_triggered_down}
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
+                </Box>
+                
+                <Box sx={{ display: "flex", gap: "4px" }}>
+                  <Tooltip title="编辑">
+                    <IconButton size="small" onClick={() => startEdit(a)}>
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title={a.enabled ? "暂停" : "启用"}>
+                    <IconButton size="small" onClick={() => handleToggleEnabled(a)}>
+                      {a.enabled ? <PauseIcon fontSize="small" /> : <PlayArrowIcon fontSize="small" />}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="删除">
+                    <IconButton size="small" onClick={() => handleDelete(a.id)}>
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              </CardContent>
+            </Card>
           ))}
-        </div>
+        </Box>
       )}
-    </div>
+    </Box>
   );
 }

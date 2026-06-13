@@ -327,6 +327,52 @@ interface NormalizedRow {
   [key: string]: any;
 }
 
+// 辅助函数：扁平化嵌套对象
+function flattenNestedObject(obj: any, prefix = ""): Record<string, any> {
+  const result: Record<string, any> = {};
+  
+  for (const key of Object.keys(obj)) {
+    const value = obj[key];
+    const newKey = prefix ? `${prefix}.${key}` : key;
+    
+    if (value === null || value === undefined) {
+      result[newKey] = value;
+    } else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      result[newKey] = value;
+    } else if (Array.isArray(value)) {
+      // 数组：检查是否包含股票数据
+      if (value.length > 0 && typeof value[0] === "object" && (value[0].代码 || value[0].股票代码)) {
+        // 包含股票数据的数组，提取第一项
+        const item = value[0];
+        result["股票代码"] = item.代码 || item.股票代码 || "";
+        result["股票简称"] = item.名称 || item.股票简称 || "";
+        result["最新价"] = item["收盘价:前复权"] || item.收盘价 || item["收盘价:不复权"] || "";
+        result["最新涨跌幅"] = item["涨跌幅:前复权"] || item.涨跌幅 || "";
+        // 保留其他字段
+        for (const itemKey of Object.keys(item)) {
+          if (!["代码", "股票代码", "名称", "股票简称", "收盘价:前复权", "收盘价", "收盘价:不复权", "涨跌幅:前复权", "涨跌幅"].includes(itemKey)) {
+            result[itemKey] = item[itemKey];
+          }
+        }
+      } else {
+        // 其他数组，递归处理
+        result[newKey] = value.map((item, index) => {
+          if (typeof item === "object" && item !== null) {
+            return flattenNestedObject(item, `${newKey}[${index}]`);
+          }
+          return item;
+        });
+      }
+    } else if (typeof value === "object") {
+      // 对象：递归扁平化
+      const nested = flattenNestedObject(value, newKey);
+      Object.assign(result, nested);
+    }
+  }
+  
+  return result;
+}
+
 function normalizeData(rawData: any[]): NormalizedRow[] {
   if (!rawData || rawData.length === 0) return [];
 
@@ -367,7 +413,20 @@ function normalizeData(rawData: any[]): NormalizedRow[] {
   }
   if (results.length > 0) return results;
 
-  // Case 4: Unknown format, return as-is
+  // Case 4: Nested object (like 资金流向 queries)
+  // 尝试扁平化嵌套结构
+  if (rawData.length === 1 && typeof rawData[0] === "object" && !Array.isArray(rawData[0])) {
+    const flattened = flattenNestedObject(rawData[0]);
+    // 检查扁平化后是否包含有意义的数据
+    const meaningfulKeys = Object.keys(flattened).filter(k => 
+      !k.includes("container") && !k.includes("unknown") && flattened[k] !== null && flattened[k] !== undefined
+    );
+    if (meaningfulKeys.length > 0) {
+      return [flattened];
+    }
+  }
+
+  // Case 5: Unknown format, return as-is
   return rawData;
 }
 
