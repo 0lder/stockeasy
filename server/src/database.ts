@@ -110,6 +110,19 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+    // 持仓表
+    db.run(`
+      CREATE TABLE IF NOT EXISTS holdings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stock_code TEXT NOT NULL,
+        stock_name TEXT NOT NULL,
+        cost_price REAL NOT NULL,
+        quantity INTEGER DEFAULT 1,
+        note TEXT DEFAULT '',
+        created_at DATETIME DEFAULT (datetime('now', 'localtime'))
+      )
+    `);
+
     // 告警设置表
   db.run(`
     CREATE TABLE IF NOT EXISTS alerts (
@@ -233,6 +246,63 @@ export function clearQueryHistory(): void {
   if (!db) throw new Error("Database not initialized");
   db.run("DELETE FROM query_history");
   saveToDisk();
+}
+
+// ============================================================
+// Holdings 持仓管理
+// ============================================================
+
+export function addHolding(stockCode: string, stockName: string, costPrice: number, quantity: number = 1, note: string = ""): { success: boolean; id?: number; error?: string } {
+  if (!db) return { success: false, error: "Database not initialized" };
+  try {
+    db.run(
+      "INSERT INTO holdings (stock_code, stock_name, cost_price, quantity, note) VALUES (?, ?, ?, ?, ?)",
+      [stockCode, stockName, costPrice, quantity, note]
+    );
+    saveToDisk();
+    const result = db.exec("SELECT last_insert_rowid()");
+    const id = result[0]?.values[0][0] as number || 0;
+    return { success: true, id };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
+}
+
+export function getHoldings(): any[] {
+  if (!db) return [];
+  const result = db.exec("SELECT * FROM holdings ORDER BY created_at DESC");
+  if (!result.length) return [];
+  const cols = result[0].columns;
+  return result[0].values.map((row: any) => {
+    const obj: any = {};
+    cols.forEach((c, i) => { obj[c] = row[i]; });
+    return obj;
+  });
+}
+
+export function updateHolding(id: number, fields: Record<string, any>): boolean {
+  if (!db) throw new Error("Database not initialized");
+  const setClauses: string[] = [];
+  const params: any[] = [];
+  const allowed = ["stock_code", "stock_name", "cost_price", "quantity", "note"];
+  for (const key of allowed) {
+    if (fields[key] !== undefined) {
+      setClauses.push(`${key} = ?`);
+      params.push(fields[key]);
+    }
+  }
+  if (!setClauses.length) return false;
+  params.push(id);
+  db.run(`UPDATE holdings SET ${setClauses.join(", ")} WHERE id = ?`, params);
+  saveToDisk();
+  return true;
+}
+
+export function deleteHolding(id: number): boolean {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM holdings WHERE id = ?", [id]);
+  saveToDisk();
+  return true;
 }
 
 export function getLatestQuery(): QueryRecord | null {
@@ -534,40 +604,6 @@ export function updateAlert(id: number, updates: Partial<{ threshold_up: number;
   saveToDisk();
 }
 
-// 更新触发记录
-export function updateAlertTriggered(id: number, currentPrice: number, changePct: number): void {
-  if (!db) throw new Error("Database not initialized");
-  if (changePct > 0) {
-    db.run("UPDATE alerts SET last_triggered_up = ?, updated_at = datetime('now', 'localtime') WHERE id = ?", [currentPrice, id]);
-  } else {
-    db.run("UPDATE alerts SET last_triggered_down = ?, updated_at = datetime('now', 'localtime') WHERE id = ?", [currentPrice, id]);
-  }
-  saveToDisk();
-}
-
-// 删除告警
-export function deleteAlert(id: number): void {
-  if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM alerts WHERE id = ?", [id]);
-  saveToDisk();
-}
-
-// 批量从自选股创建告警（不重复）
-export function createAlertsFromWatchlist(stocks: { code: string; name: string }[]): number {
-  if (!db) throw new Error("Database not initialized");
-  let created = 0;
-  const existing = new Set(getAlerts().map(a => a.stock_code));
-  for (const s of stocks) {
-    if (!existing.has(s.code)) {
-      createAlert(s.code, s.name);
-      created++;
-    }
-  }
-  return created;
-}
-
-// ============================================================
-// Settings 设置存储（AI 配置等）
 // ============================================================
 
 export function getSetting(key: string): string | null {
@@ -590,7 +626,6 @@ export function setSetting(key: string, value: string): void {
   db.run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, value]);
   saveToDisk();
 }
-
 export function deleteSetting(key: string): void {
   if (!db) throw new Error("Database not initialized");
   db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");

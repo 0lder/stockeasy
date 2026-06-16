@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import ExcelJS from "exceljs";
 import { queryWencai } from "./wencai.js";
-import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist, getSetting, setSetting, deleteSetting } from "./database.js";
+import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist, getSetting, setSetting, deleteSetting, addHolding, getHoldings, updateHolding, deleteHolding } from "./database.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -120,27 +120,64 @@ app.get("/api/strategies", (_req, res) => {
   }
 });
 
-// 创建策略
-app.post("/api/strategies", (req, res) => {
+// 创建策略（自动生成初始快照）
+app.post("/api/strategies", async (req, res) => {
   try {
     const { name, query_text, description, tags, group_name } = req.body;
     if (!name || !query_text) {
       return res.status(400).json({ error: "名称和查询条件不能为空" });
     }
     const id = createStrategy(name, query_text, description || "", tags || [], group_name || "默认");
-    res.json({ success: true, id });
+    // 自动生成初始快照
+    let snapshot_id = null;
+    let stocks = 0;
+    try {
+      const queryRes = await queryWencai(query_text, 50);
+      const stockList = (queryRes.data || []).map((r: any) => ({
+        code: r.股票代码 || r.code,
+        name: r.股票简称 || r.name || "",
+        price: parseFloat(r.最新价 || 0),
+      })).filter((r: any) => r.code && r.name);
+      if (stockList.length > 0) {
+        snapshot_id = createSnapshot(id, stockList);
+        stocks = stockList.length;
+      }
+    } catch (_e) {
+      // 快照生成失败不影响策略创建
+    }
+    res.json({ success: true, id, snapshot: { id: snapshot_id, stocks } });
   } catch (error: any) {
     res.status(500).json({ error: "创建策略失败", detail: error.message });
   }
 });
 
-// 更新策略
-app.put("/api/strategies/:id", (req, res) => {
+// 更新策略（自动重新生成快照）
+app.put("/api/strategies/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "无效的 ID" });
     updateStrategy(id, req.body);
-    res.json({ success: true });
+    // 如果查询条件变了，重新生成快照
+    let snapshot_id = null;
+    let stocks = 0;
+    const query_text = req.body.query_text;
+    if (query_text) {
+      try {
+        const queryRes = await queryWencai(query_text, 50);
+        const stockList = (queryRes.data || []).map((r: any) => ({
+          code: r.股票代码 || r.code,
+          name: r.股票简称 || r.name || "",
+          price: parseFloat(r.最新价 || 0),
+        })).filter((r: any) => r.code && r.name);
+        if (stockList.length > 0) {
+          snapshot_id = createSnapshot(id, stockList);
+          stocks = stockList.length;
+        }
+      } catch (_e) {
+        // 快照生成失败不影响策略更新
+      }
+    }
+    res.json({ success: true, snapshot: snapshot_id ? { id: snapshot_id, stocks } : null });
   } catch (error: any) {
     res.status(500).json({ error: "更新策略失败", detail: error.message });
   }
@@ -202,7 +239,38 @@ app.post("/api/strategies/auto-snapshot", async (_req, res) => {
           continue;
         }
         const snapshotId = createSnapshot(s.id, stocks);
-        results.push({ strategy_id: s.id, strategy_name: s.name, stocks: stocks.length, status: "ok", snapshot_id: snapshotId });
+
+        // 计算与上期快照的涨跌对比
+        const snapshots = getSnapshots(s.id);
+        let stats: any = null;
+        if (snapshots.length >= 2) {
+          // 用最新快照的日期筛选：找到上一个不同日期的快照作为对比基准
+          const currentDate = snapshots[0].snapshot_date;
+          const prev = snapshots.find((ss: any) => ss.snapshot_date !== currentDate);
+          if (prev) {
+            const prevStocks = getSnapshotStocks(prev.id);
+            if (prevStocks.length > 0) {
+              stats = computeSnapshotStats(prevStocks, stocks, previousPriceMap(prevStocks));
+            }
+          }
+        }
+
+        results.push({
+          strategy_id: s.id, strategy_name: s.name,
+          stocks: stocks.length, status: "ok", snapshot_id: snapshotId,
+          stats: stats ? {
+            kept_count: stats.kept_count,
+            new_count: stats.new_count,
+            removed_count: stats.removed_count,
+            up_count: stats.up_count,
+            down_count: stats.down_count,
+            flat_count: stats.flat_count,
+            up_ratio: stats.up_ratio,
+            avg_change: stats.avg_change,
+            best_5: stats.best_5,
+            worst_5: stats.worst_5,
+          } : null,
+        });
       } catch (err: any) {
         results.push({ strategy_id: s.id, strategy_name: s.name, status: "error", detail: err.message });
       }
@@ -212,6 +280,58 @@ app.post("/api/strategies/auto-snapshot", async (_req, res) => {
     res.status(500).json({ error: "自动快照失败", detail: error.message });
   }
 });
+
+// 辅助函数：构建价格映射
+function previousPriceMap(stocks: any[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (const s of stocks) {
+    const code = (s.stock_code || "").replace(/\.(SZ|SH)$/i, "");
+    if (s.price_at_snapshot) map[code] = s.price_at_snapshot;
+  }
+  return map;
+}
+
+// 辅助函数：计算快照对比统计
+function computeSnapshotStats(prevStocks: any[], currStocks: { code: string; name: string; price: number }[], prevPriceMap: Record<string, number>): any {
+  const normalize = (code: string) => (code || "").replace(/\.(SZ|SH)$/i, "");
+  const currMap = new Map(currStocks.map(s => [normalize(s.code), s]));
+
+  // 找出保留股票并计算涨跌
+  const changes: { name: string; from: number; to: number; changePct: number }[] = [];
+  for (const prev of prevStocks) {
+    const code = normalize(prev.stock_code);
+    const curr = currMap.get(code);
+    if (curr && prev.price_at_snapshot && curr.price) {
+      const changePct = (curr.price - prev.price_at_snapshot) / prev.price_at_snapshot * 100;
+      changes.push({ name: prev.stock_name, from: prev.price_at_snapshot, to: curr.price, changePct });
+    }
+  }
+
+  changes.sort((a, b) => b.changePct - a.changePct);
+
+  const up = changes.filter(c => c.changePct > 0);
+  const down = changes.filter(c => c.changePct < 0);
+  const flat = changes.filter(c => c.changePct === 0);
+  const avgChange = changes.length > 0 ? changes.reduce((s, c) => s + c.changePct, 0) / changes.length : 0;
+
+  const prevCodeSet = new Set(prevStocks.map(s => normalize(s.stock_code)));
+  const newCount = currStocks.filter(s => !prevCodeSet.has(normalize(s.code))).length;
+  const currCodeSet = new Set(currStocks.map(s => normalize(s.code)));
+  const removedCount = prevStocks.filter(s => !currCodeSet.has(normalize(s.stock_code))).length;
+
+  return {
+    kept_count: changes.length,
+    new_count: newCount,
+    removed_count: removedCount,
+    up_count: up.length,
+    down_count: down.length,
+    flat_count: flat.length,
+    up_ratio: changes.length > 0 ? (up.length / changes.length * 100).toFixed(1) + "%" : "-",
+    avg_change: avgChange.toFixed(2) + "%",
+    best_5: changes.slice(0, 5).map(c => ({ name: c.name, change: c.changePct.toFixed(2) + "%", from: c.from.toFixed(2), to: c.to.toFixed(2) })),
+    worst_5: changes.slice(-5).reverse().map(c => ({ name: c.name, change: c.changePct.toFixed(2) + "%", from: c.from.toFixed(2), to: c.to.toFixed(2) })),
+  };
+}
 
 // ============================================================
 // API: Strategy Snapshots (策略快照)
@@ -263,6 +383,72 @@ app.get("/api/snapshots", (_req, res) => {
     res.json(snapshots);
   } catch (error: any) {
     res.status(500).json({ error: "获取快照列表失败", detail: error.message });
+  }
+});
+
+// 快照统计对比 — 基于两期快照价格计算涨跌统计
+app.get("/api/snapshots/compare-stats", async (req, res) => {
+  try {
+    const idsStr = req.query.ids as string;
+    if (!idsStr) return res.status(400).json({ error: "请提供快照 ID，格式 ?ids=a,b" });
+    const [idA, idB] = idsStr.split(",").map(Number);
+    if (isNaN(idA) || isNaN(idB)) return res.status(400).json({ error: "无效的快照 ID" });
+
+    const stocksA = getSnapshotStocks(idA);
+    const stocksB = getSnapshotStocks(idB);
+    if (!stocksA.length || !stocksB.length) return res.status(404).json({ error: "快照不存在" });
+
+    const normalize = (code: string) => code.replace(/\.(SZ|SH)$/i, "");
+
+    // 构建 B 的价格映射
+    const priceBMap: Record<string, number> = {};
+    for (const s of stocksB) {
+      if (s.price_at_snapshot) priceBMap[normalize(s.stock_code)] = s.price_at_snapshot;
+    }
+
+    // 找出两期都有的股票，计算从 A 到 B 的价格变化
+    const changes: { code: string; name: string; priceA: number; priceB: number; changePct: number }[] = [];
+    for (const s of stocksA) {
+      const code = normalize(s.stock_code);
+      const priceA = s.price_at_snapshot;
+      const priceB = priceBMap[code];
+      if (priceA && priceB) {
+        const changePct = (priceB - priceA) / priceA * 100;
+        changes.push({ code: s.stock_code, name: s.stock_name, priceA, priceB, changePct });
+      }
+    }
+
+    changes.sort((a, b) => b.changePct - a.changePct);
+
+    const up = changes.filter(c => c.changePct > 0);
+    const down = changes.filter(c => c.changePct < 0);
+    const flat = changes.filter(c => c.changePct === 0);
+    const avgChange = changes.length > 0 ? changes.reduce((s, c) => s + c.changePct, 0) / changes.length : 0;
+    const totalReturn = changes.length > 0 ? changes.reduce((s, c) => s + (c.changePct / 100), 0) : 0;
+
+    res.json({
+      snapshot_a: idA, snapshot_b: idB,
+      total_common: changes.length,
+      up_count: up.length,
+      down_count: down.length,
+      flat_count: flat.length,
+      up_ratio: changes.length > 0 ? (up.length / changes.length * 100).toFixed(1) + "%" : "-",
+      avg_change: avgChange.toFixed(2) + "%",
+      total_return: (totalReturn / changes.length * 100).toFixed(2) + "%",
+      best_5: changes.slice(0, 5).map(c => ({
+        name: c.name, change: c.changePct.toFixed(2) + "%",
+        from: c.priceA.toFixed(2), to: c.priceB.toFixed(2)
+      })),
+      worst_5: changes.slice(-5).reverse().map(c => ({
+        name: c.name, change: c.changePct.toFixed(2) + "%",
+        from: c.priceA.toFixed(2), to: c.priceB.toFixed(2)
+      })),
+      kept_count: changes.length,
+      new_count: stocksB.filter(s => !stocksA.some(a => normalize(a.stock_code) === normalize(s.stock_code))).length,
+      removed_count: stocksA.filter(s => !stocksB.some(b => normalize(b.stock_code) === normalize(s.stock_code))).length,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: "统计失败", detail: error.message });
   }
 });
 
@@ -574,13 +760,14 @@ app.post("/api/alerts/check", async (_req, res) => {
       const data = priceMap[code];
       if (!data || !data.change) continue;
 
+      const currentPrice = data.price;
       const changePct = data.change;
-      if (changePct <= alert.threshold_down) {
-        triggered.push({ alert_id: alert.id, stock_code: alert.stock_code, stock_name: alert.stock_name, change: changePct, threshold: alert.threshold_down, direction: "down", current_price: data.price });
-        updateAlertTriggered(alert.id, data.price, changePct);
-      } else if (changePct >= alert.threshold_up) {
-        triggered.push({ alert_id: alert.id, stock_code: alert.stock_code, stock_name: alert.stock_name, change: changePct, threshold: alert.threshold_up, direction: "up", current_price: data.price });
-        updateAlertTriggered(alert.id, data.price, changePct);
+      if (currentPrice <= alert.threshold_down) {
+        triggered.push({ alert_id: alert.id, stock_code: alert.stock_code, stock_name: alert.stock_name, change: changePct, threshold: alert.threshold_down, direction: "down", current_price: currentPrice });
+        updateAlertTriggered(alert.id, currentPrice, changePct);
+      } else if (currentPrice >= alert.threshold_up) {
+        triggered.push({ alert_id: alert.id, stock_code: alert.stock_code, stock_name: alert.stock_name, change: changePct, threshold: alert.threshold_up, direction: "up", current_price: currentPrice });
+        updateAlertTriggered(alert.id, currentPrice, changePct);
       }
     }
 
@@ -818,6 +1005,153 @@ app.put("/api/config/ai", (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============================================================
+// API: Portfolio Holdings 持仓管理 + 日报推送
+// ============================================================
+
+app.get("/api/holdings", (_req, res) => {
+  try {
+    res.json(getHoldings());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/holdings", (req, res) => {
+  const { stock_code, stock_name, cost_price, quantity, note } = req.body;
+  if (!stock_code || !stock_name || !cost_price) {
+    return res.status(400).json({ error: "缺少必填字段: stock_code, stock_name, cost_price" });
+  }
+  try {
+    const result = addHolding(stock_code, stock_name, cost_price, quantity || 1, note || "");
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/holdings/:id", (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "无效 ID" });
+  try {
+    updateHolding(id, req.body);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/holdings/:id", (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "无效 ID" });
+  try {
+    deleteHolding(id);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 日报摘要：查询持仓最新行情并生成涨跌汇总
+app.get("/api/daily-summary", async (_req, res) => {
+  try {
+    const holdings = getHoldings();
+    if (!holdings.length) {
+      return res.json({ summary: "📋 当前无持仓记录", items: [], totalPnl: 0 });
+    }
+
+    // 批量查询行情
+    const codes = holdings.map((h: any) => h.stock_code).join(",");
+    const queryText = `${codes} 最新价 最新涨跌幅 总市值`;
+    const quoteResult = await queryWencai(queryText, 20);
+
+    // 构建行情映射
+    const quoteMap: Record<string, any> = {};
+    if (quoteResult.data) {
+      for (const row of quoteResult.data) {
+        const code = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
+        quoteMap[code] = {
+          price: parseFloat(row.最新价) || 0,
+          change: parseFloat(row.最新涨跌幅) || 0,
+        };
+      }
+    }
+
+    const items: any[] = [];
+    let totalCost = 0;
+    let totalMarketValue = 0;
+    let totalPnl = 0;
+
+    for (const h of holdings) {
+      const code = h.stock_code.replace(/\.(SZ|SH)$/i, "");
+      const quote = quoteMap[code] || { price: 0, change: 0 };
+      const costPrice = h.cost_price;
+      const qty = h.quantity || 1;
+      const currentPrice = quote.price;
+      const itemCost = costPrice * qty;
+      const itemValue = currentPrice * qty;
+      const itemPnl = itemValue - itemCost;
+      const itemPnlPercent = costPrice > 0 ? ((currentPrice - costPrice) / costPrice) * 100 : 0;
+
+      totalCost += itemCost;
+      totalMarketValue += itemValue;
+      totalPnl += itemPnl;
+
+      items.push({
+        stock_code: code,
+        stock_name: h.stock_name,
+        cost_price: costPrice,
+        current_price: currentPrice,
+        change_percent: quote.change,
+        pnl: itemPnl,
+        pnl_percent: itemPnlPercent,
+        quantity: qty,
+      });
+    }
+
+    const totalPnlPercent = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+
+    res.json({
+      summary: buildDailySummary(items, totalPnl, totalPnlPercent),
+      items,
+      totalPnl,
+      totalPnlPercent,
+      totalCost,
+      totalMarketValue,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function buildDailySummary(items: any[], totalPnl: number, totalPnlPercent: number): string {
+  const date = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", weekday: "long" });
+  const pnlSymbol = totalPnl >= 0 ? "📈" : "📉";
+  const pnlStr = `${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}`;
+  const pnlPctStr = `${totalPnlPercent >= 0 ? "+" : ""}${totalPnlPercent.toFixed(2)}%`;
+
+  let lines = [
+    `📊 持仓日报 | ${date}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `总盈亏: ${pnlSymbol} ${pnlStr} (${pnlPctStr})`,
+    `━━━━━━━━━━━━━━━━━━`,
+  ];
+
+  for (const item of items) {
+    const emoji = item.pnl >= 0 ? "🟢" : "🔴";
+    const pnlS = `${item.pnl >= 0 ? "+" : ""}${item.pnl.toFixed(2)}`;
+    const pctS = `${item.pnl_percent >= 0 ? "+" : ""}${item.pnl_percent.toFixed(2)}%`;
+    const dayS = `${item.change_percent >= 0 ? "+" : ""}${item.change_percent.toFixed(2)}%`;
+    lines.push(`${emoji} ${item.stock_name}(${item.stock_code})`);
+    lines.push(`   成本 ${item.cost_price.toFixed(2)} → 现价 ${item.current_price.toFixed(2)}  (${dayS})`);
+    lines.push(`   浮盈: ${pnlS} | ${pctS}`);
+  }
+
+  lines.push(`━━━━━━━━━━━━━━━━━━`);
+  lines.push(`💡 StockEasy 每日收盘播报`);
+  return lines.join("\n");
+}
 
 // ============================================================
 // Stock Diagnosis
