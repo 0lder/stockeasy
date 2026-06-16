@@ -5,7 +5,8 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import ExcelJS from "exceljs";
 import { queryWencai } from "./wencai.js";
-import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist, getSetting, setSetting, deleteSetting, addHolding, getHoldings, updateHolding, deleteHolding } from "./database.js";
+import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist, getSetting, setSetting, deleteSetting, addHolding, getHoldings, updateHolding, deleteHolding, getCachedPrices, setCachedPrice, clearPriceCache } from "./database.js";
+import Iconv from "iconv-lite";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1338,49 +1339,75 @@ app.get("/api/dashboard", async (_req, res) => {
       });
     }
 
-    // 2. Query Sina for current price + yesterday close
-    const sinaCodes = allStocks.map((s: any) => {
-      const raw = s.rawCode || "";
-      return raw.endsWith(".SZ") ? `sz${s.code}` : raw.endsWith(".BJ") ? `bj${s.code}` : `sh${s.code}`;
-    });
+    // 2. Cache lookup
+    const allCodes = allStocks.map((s: any) => s.code);
+    const cached = getCachedPrices(allCodes);
 
+    // 3. Query Sina for current price + yesterday close (GBK解码 + 缓存)
     const currentPrices: Record<string, number> = {};
     const yesterdayClose: Record<string, number> = {};
-    const BATCH = 100;
+    const todayStr = new Date().toISOString().slice(0, 10);
 
-    for (let i = 0; i < sinaCodes.length; i += BATCH) {
-      const batch = sinaCodes.slice(i, i + BATCH).join(",");
-      const url = `http://hq.sinajs.cn/list=${batch}`;
-      try {
-        const data = await new Promise<string>((resolve, reject) => {
-          http.get(url, { headers: { "Referer": "https://finance.sina.com.cn" } }, (r: any) => {
-            let b = ""; r.on("data", (c: any) => b += c); r.on("end", () => resolve(b));
-          }).on("error", reject);
-        });
-        for (const line of data.split("\n")) {
-          if (!line.trim()) continue;
-          const m = line.match(/hq_str_(s[hz]\d+)="([^"]+)"/);
-          if (!m) continue;
-          const parts = m[2].split(",");
-          const code = m[1].replace(/^(sh|sz|bj)/, "");
-          const cur = parseFloat(parts[3]);
-          const yc = parseFloat(parts[2]);
-          if (code && !isNaN(cur) && cur > 0) currentPrices[code] = cur;
-          if (code && !isNaN(yc) && yc > 0) yesterdayClose[code] = yc;
-        }
-      } catch (_) { /* skip */ }
+    // 先填充缓存命中
+    const needSina: string[] = [];
+    for (const s of allStocks) {
+      const hit = cached.get(s.code);
+      if (hit) {
+        currentPrices[s.code] = hit.current;
+        yesterdayClose[s.code] = hit.yest;
+      } else {
+        needSina.push(s);
+      }
     }
 
-    // 3. Calculate changes (use yesterday close for same-day snapshots)
-    const today = new Date().toISOString().slice(0, 10);
+    // 未命中 → 查新浪
+    if (needSina.length > 0) {
+      const BATCH = 100;
+      for (let i = 0; i < needSina.length; i += BATCH) {
+        const batchStocks = needSina.slice(i, i + BATCH);
+        const sinaCodes = batchStocks.map((s: any) => {
+          const raw = s.rawCode || "";
+          return raw.endsWith(".SZ") ? `sz${s.code}` : raw.endsWith(".BJ") ? `bj${s.code}` : `sh${s.code}`;
+        });
+        const url = `http://hq.sinajs.cn/list=${sinaCodes.join(",")}`;
+        try {
+          const buffer = await new Promise<Buffer>((resolve, reject) => {
+            http.get(url, { headers: { "Referer": "https://finance.sina.com.cn" } }, (r: any) => {
+              const chunks: Buffer[] = [];
+              r.on("data", (c: Buffer) => chunks.push(c));
+              r.on("end", () => resolve(Buffer.concat(chunks)));
+            }).on("error", reject);
+          });
+          // GBK → UTF-8 解码
+          const data = Iconv.decode(buffer, "gbk");
+          for (const line of data.split("\n")) {
+            if (!line.trim()) continue;
+            const m = line.match(/hq_str_(s[hz]\d+)="([^"]+)"/);
+            if (!m) continue;
+            const parts = m[2].split(",");
+            const code = m[1].replace(/^(sh|sz|bj)/, "");
+            const cur = parseFloat(parts[3]);
+            const yc = parseFloat(parts[2]);
+            const name = parts[0]; // 解码后的中文名
+            if (code && !isNaN(cur) && cur > 0) {
+              currentPrices[code] = cur;
+              yesterdayClose[code] = yc;
+              setCachedPrice(code, name || "", cur, yc);
+            }
+          }
+        } catch (_) { /* skip batch */ }
+      }
+    }
+
+    // 3b. Calculate changes (use yesterday close for same-day snapshots)
     for (const s of allStocks) {
       const cur = currentPrices[s.code];
       // 当日快照用昨收作基准
-      const baseline = s.snapDate === today ? yesterdayClose[s.code] : s.snapPrice;
+      const baseline = s.snapDate === todayStr ? yesterdayClose[s.code] : s.snapPrice;
       if (cur && baseline) {
         s.currentPrice = cur;
         s.changePct = (cur - baseline) / baseline * 100;
-        s.baselineUsed = s.snapDate === today ? "昨收" : "快照价";
+        s.baselineUsed = s.snapDate === todayStr ? "昨收" : "快照价";
       } else {
         s.currentPrice = null;
         s.changePct = null;
@@ -1388,17 +1415,19 @@ app.get("/api/dashboard", async (_req, res) => {
       }
     }
 
-    // 4. Group ranking
+    // 4. Group ranking (含风险指标)
     const groupMap: Record<string, any> = {};
     for (const s of allStocks) {
       const g = s.strategyGroup;
-      if (!groupMap[g]) groupMap[g] = { names: new Set(), up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0 };
+      if (!groupMap[g]) groupMap[g] = { names: new Set(), up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0, winSum: 0, lossSum: 0 };
       groupMap[g].names.add(s.strategyName);
       groupMap[g].total++;
       if (s.changePct === null) continue;
       groupMap[g].totalReturn += s.changePct;
       groupMap[g].countReturn++;
-      if (s.changePct > 0) groupMap[g].up++; else if (s.changePct < 0) groupMap[g].down++; else groupMap[g].flat++;
+      if (s.changePct > 0) { groupMap[g].up++; groupMap[g].winSum += s.changePct; }
+      else if (s.changePct < 0) { groupMap[g].down++; groupMap[g].lossSum += Math.abs(s.changePct); }
+      else groupMap[g].flat++;
     }
 
     const groupRank = Object.entries(groupMap)
@@ -1408,20 +1437,25 @@ app.get("/api/dashboard", async (_req, res) => {
         total: g.total, up: g.up, down: g.down, flat: g.flat,
         upRatio: g.countReturn > 0 ? +(g.up / g.countReturn * 100).toFixed(1) : 0,
         avgReturn: g.countReturn > 0 ? +(g.totalReturn / g.countReturn).toFixed(2) : 0,
+        avgWin: g.up > 0 ? +(g.winSum / g.up).toFixed(2) : 0,
+        avgLoss: g.down > 0 ? +(g.lossSum / g.down).toFixed(2) : 0,
+        winLossRatio: g.lossSum > 0 ? +(g.winSum / g.lossSum).toFixed(2) : 0,
       }))
       .sort((a: any, b: any) => b.upRatio - a.upRatio)
       .map((g: any, i: number) => ({ rank: i + 1, ...g }));
 
-    // 5. Strategy ranking
+    // 5. Strategy ranking (含风险指标)
     const stratMap: Record<string, any> = {};
     for (const s of allStocks) {
       const key = s.strategyName;
-      if (!stratMap[key]) stratMap[key] = { group: s.strategyGroup, up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0 };
+      if (!stratMap[key]) stratMap[key] = { group: s.strategyGroup, up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0, winSum: 0, lossSum: 0 };
       stratMap[key].total++;
       if (s.changePct === null) continue;
       stratMap[key].totalReturn += s.changePct;
       stratMap[key].countReturn++;
-      if (s.changePct > 0) stratMap[key].up++; else if (s.changePct < 0) stratMap[key].down++; else stratMap[key].flat++;
+      if (s.changePct > 0) { stratMap[key].up++; stratMap[key].winSum += s.changePct; }
+      else if (s.changePct < 0) { stratMap[key].down++; stratMap[key].lossSum += Math.abs(s.changePct); }
+      else stratMap[key].flat++;
     }
 
     const strategyRank = Object.entries(stratMap)
@@ -1430,6 +1464,9 @@ app.get("/api/dashboard", async (_req, res) => {
         total: st.total, up: st.up, down: st.down,
         upRatio: st.countReturn > 0 ? +(st.up / st.countReturn * 100).toFixed(1) : 0,
         avgReturn: st.countReturn > 0 ? +(st.totalReturn / st.countReturn).toFixed(2) : 0,
+        avgWin: st.up > 0 ? +(st.winSum / st.up).toFixed(2) : 0,
+        avgLoss: st.down > 0 ? +(st.lossSum / st.down).toFixed(2) : 0,
+        winLossRatio: st.lossSum > 0 ? +(st.winSum / st.lossSum).toFixed(2) : 0,
       }))
       .sort((a: any, b: any) => b.upRatio - a.upRatio)
       .map((s: any, i: number) => ({ rank: i + 1, ...s }));
@@ -1463,14 +1500,49 @@ app.get("/api/dashboard", async (_req, res) => {
     }
     overlapMatrix.sort((a, b) => b.overlap - a.overlap);
 
+    // 7. Multi-period trend (各策略历史快照收益趋势)
+    const strategyTrend: any[] = [];
+    for (const s of strategies) {
+      const snaps = getSnapshots(s.id);
+      if (snaps.length < 1) continue;
+      // 按日期升序（最老的在前面）
+      snaps.sort((a: any, b: any) => a.snapshot_date.localeCompare(b.snapshot_date));
+      const points: { date: string; avgReturn: number; upRatio: number; stockCount: number }[] = [];
+      for (const snap of snaps) {
+        const stocks = getSnapshotStocks(snap.id);
+        let retSum = 0, count = 0, up = 0;
+        for (const st of stocks) {
+          const code = (st.stock_code || "").replace(/\.(SZ|SH|BJ)$/i, "");
+          const cur = currentPrices[code];
+          if (cur && st.price_at_snapshot && st.price_at_snapshot > 0) {
+            const ret = (cur - st.price_at_snapshot) / st.price_at_snapshot * 100;
+            retSum += ret; count++;
+            if (ret > 0) up++;
+          }
+        }
+        if (count > 0) {
+          points.push({
+            date: snap.snapshot_date,
+            avgReturn: +(retSum / count).toFixed(2),
+            upRatio: +(up / count * 100).toFixed(1),
+            stockCount: count,
+          });
+        }
+      }
+      if (points.length >= 1) {
+        strategyTrend.push({ strategy: s.name, group: s.group_name, snapshots: points });
+      }
+    }
+
     res.json({
-      date: today,
+      date: todayStr,
       totalStrategies: strategies.length,
       totalStocks: allStocks.length,
       priceCoverage: allStocks.filter((s: any) => s.changePct !== null).length,
       groupRank,
       strategyRank,
       overlapMatrix,
+      strategyTrend,
     });
   } catch (error: any) {
     res.status(500).json({ error: "仪表盘数据获取失败", detail: error.message });

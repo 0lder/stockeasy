@@ -1,7 +1,8 @@
-import { initDatabase, getStrategies, getSnapshots, getSnapshotStocks } from "../src/database.js";
+import { initDatabase, getStrategies, getSnapshots, getSnapshotStocks, getCachedPrices, setCachedPrice } from "../src/database.js";
 import ExcelJS from "exceljs";
 import path from "path";
 import fs from "fs";
+import Iconv from "iconv-lite";
 
 await initDatabase();
 const strategies = getStrategies();
@@ -15,10 +16,11 @@ for (const s of strategies) {
   const stocksList = getSnapshotStocks(snap.id);
   stocksList.forEach(st => {
     allStocks.push({
-      rawCode: st.stock_code, // e.g. "002734.SZ"
+      rawCode: st.stock_code,
       code: (st.stock_code || "").replace(/\.(SZ|SH|BJ)$/i, ""),
       name: st.stock_name,
       snapPrice: st.price_at_snapshot,
+      snapDate: snap.snapshot_date,
       strategyId: s.id,
       strategyName: s.name,
       strategyGroup: s.group_name,
@@ -26,44 +28,65 @@ for (const s of strategies) {
   });
 }
 
-// ── Query current prices via Sina API (batch, 100 per request) ──
-const sinaCodes = allStocks.map(s => {
-  const raw = s.rawCode || "";
-  return raw.endsWith(".SZ") ? `sz${s.code}` : raw.endsWith(".BJ") ? `bj${s.code}` : `sh${s.code}`;
-});
-
+// ── Query current prices via Sina API (GBK解码 + 缓存) ──
 const currentPrices = {};
 const yesterdayClose = {};
+const today = new Date().toISOString().slice(0, 10);
+
+// 1. Cache lookup
+const allCodes = allStocks.map(s => s.code);
+const cached = getCachedPrices(allCodes);
+const needSina = [];
+
+for (const s of allStocks) {
+  const hit = cached.get(s.code);
+  if (hit) {
+    currentPrices[s.code] = hit.current;
+    yesterdayClose[s.code] = hit.yest;
+  } else {
+    needSina.push(s);
+  }
+}
+
+// 2. Missing → fetch from Sina with GBK decoding
 const BATCH = 100;
-for (let i = 0; i < sinaCodes.length; i += BATCH) {
-  const batch = sinaCodes.slice(i, i + BATCH).join(",");
-  const url = `http://hq.sinajs.cn/list=${batch}`;
+for (let i = 0; i < needSina.length; i += BATCH) {
+  const batch = needSina.slice(i, i + BATCH);
+  const sinaCodes = batch.map(s => {
+    const raw = s.rawCode || "";
+    return raw.endsWith(".SZ") ? `sz${s.code}` : raw.endsWith(".BJ") ? `bj${s.code}` : `sh${s.code}`;
+  });
+  const url = `http://hq.sinajs.cn/list=${sinaCodes.join(",")}`;
   try {
     const resp = await fetch(url, { headers: { "Referer": "https://finance.sina.com.cn" } });
-    const text = await resp.text();
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    const text = Iconv.decode(buffer, "gbk");
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       const m = line.match(/hq_str_(s[hz]\d+)="([^"]+)"/);
       if (!m) continue;
       const parts = m[2].split(",");
       const code = m[1].replace(/^(sh|sz|bj)/, "");
-      const price = parseFloat(parts[3]); // current price
-      const yc = parseFloat(parts[2]);    // yesterday close
-      if (code && !isNaN(price) && price > 0) currentPrices[code] = price;
-      if (code && !isNaN(yc) && yc > 0) yesterdayClose[code] = yc;
+      const cur = parseFloat(parts[3]);
+      const yc = parseFloat(parts[2]);
+      const name = parts[0];
+      if (code && !isNaN(cur) && cur > 0) {
+        currentPrices[code] = cur;
+        yesterdayClose[code] = yc;
+        setCachedPrice(code, name || "", cur, yc);
+      }
     }
   } catch (_e) { /* skip batch */ }
 }
 
 // ── Calculate changes (当日快照用昨收作基准) ──
-const today = new Date().toISOString().slice(0, 10);
 let hasPriceCount = 0;
 for (const s of allStocks) {
   const cur = currentPrices[s.code];
   const baseline = s.snapDate === today ? yesterdayClose[s.code] : s.snapPrice;
   if (cur && baseline) {
     s.currentPrice = cur;
-    s.changePct = (cur - s.snapPrice) / s.snapPrice * 100;
+    s.changePct = (cur - baseline) / baseline * 100;
     hasPriceCount++;
   } else {
     s.currentPrice = null;
@@ -79,13 +102,15 @@ console.log(`Price data: ${hasPriceCount}/${allStocks.length} stocks`);
 const groupMap = {};
 for (const s of allStocks) {
   const g = s.strategyGroup;
-  if (!groupMap[g]) groupMap[g] = { names: new Set(), up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0 };
+  if (!groupMap[g]) groupMap[g] = { names: new Set(), up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0, winSum: 0, lossSum: 0 };
   groupMap[g].names.add(s.strategyName);
   groupMap[g].total++;
   if (s.changePct === null) continue;
   groupMap[g].totalReturn += s.changePct;
   groupMap[g].countReturn++;
-  if (s.isUp) groupMap[g].up++; else if (s.isDown) groupMap[g].down++; else groupMap[g].flat++;
+  if (s.isUp) { groupMap[g].up++; groupMap[g].winSum += s.changePct; }
+  else if (s.isDown) { groupMap[g].down++; groupMap[g].lossSum += Math.abs(s.changePct); }
+  else groupMap[g].flat++;
 }
 
 const groupRank = Object.entries(groupMap)
@@ -95,6 +120,9 @@ const groupRank = Object.entries(groupMap)
     total: g.total, up: g.up, down: g.down, flat: g.flat,
     upRatio: g.countReturn > 0 ? (g.up / g.countReturn * 100).toFixed(1) + "%" : "-",
     avgReturn: g.countReturn > 0 ? (g.totalReturn / g.countReturn).toFixed(2) + "%" : "-",
+    avgWin: g.up > 0 ? (g.winSum / g.up).toFixed(2) + "%" : "-",
+    avgLoss: g.down > 0 ? (g.lossSum / g.down).toFixed(2) + "%" : "-",
+    winLossRatio: g.lossSum > 0 ? (g.winSum / g.lossSum).toFixed(2) : "-",
   }))
   .sort((a, b) => parseFloat(b.upRatio) - parseFloat(a.upRatio))
   .map((g, i) => ({ rank: i + 1, ...g }));
@@ -103,12 +131,14 @@ const groupRank = Object.entries(groupMap)
 const stratMap = {};
 for (const s of allStocks) {
   const key = s.strategyName;
-  if (!stratMap[key]) stratMap[key] = { group: s.strategyGroup, up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0 };
+  if (!stratMap[key]) stratMap[key] = { group: s.strategyGroup, up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0, winSum: 0, lossSum: 0 };
   stratMap[key].total++;
   if (s.changePct === null) continue;
   stratMap[key].totalReturn += s.changePct;
   stratMap[key].countReturn++;
-  if (s.isUp) stratMap[key].up++; else if (s.isDown) stratMap[key].down++; else stratMap[key].flat++;
+  if (s.isUp) { stratMap[key].up++; stratMap[key].winSum += s.changePct; }
+  else if (s.isDown) { stratMap[key].down++; stratMap[key].lossSum += Math.abs(s.changePct); }
+  else stratMap[key].flat++;
 }
 
 const stratRank = Object.entries(stratMap)
@@ -117,6 +147,9 @@ const stratRank = Object.entries(stratMap)
     total: st.total, up: st.up, down: st.down,
     upRatio: st.countReturn > 0 ? (st.up / st.countReturn * 100).toFixed(1) + "%" : "-",
     avgReturn: st.countReturn > 0 ? (st.totalReturn / st.countReturn).toFixed(2) + "%" : "-",
+    avgWin: st.up > 0 ? (st.winSum / st.up).toFixed(2) + "%" : "-",
+    avgLoss: st.down > 0 ? (st.lossSum / st.down).toFixed(2) + "%" : "-",
+    winLossRatio: st.lossSum > 0 ? (st.winSum / st.lossSum).toFixed(2) : "-",
   }))
   .sort((a, b) => parseFloat(b.upRatio) - parseFloat(a.upRatio))
   .map((s, i) => ({ rank: i + 1, ...s }));
@@ -147,6 +180,7 @@ s1.columns = [
   { header: "策略组合", key: "strategies", width: 28 }, { header: "总标的", key: "total", width: 8 },
   { header: "上涨", key: "up", width: 8 }, { header: "下跌", key: "down", width: 8 }, { header: "持平", key: "flat", width: 8 },
   { header: "上涨率↑", key: "upRatio", width: 10 }, { header: "平均收益", key: "avgReturn", width: 12 },
+  { header: "均胜↑", key: "avgWin", width: 10 }, { header: "均败↓", key: "avgLoss", width: 10 }, { header: "赔率", key: "winLossRatio", width: 10 },
 ];
 const h1 = s1.getRow(1);
 h1.font = hFont; h1.fill = hFill(purple); h1.alignment = { vertical: "middle", horizontal: "center" };
@@ -156,6 +190,8 @@ groupRank.forEach((g, i) => {
   r.eachCell(c => cBorder(c));
   [1, 4, 5, 6, 7, 8].forEach(j => r.getCell(j).alignment = { horizontal: "center" });
   r.getCell(9).alignment = { horizontal: "right" };
+  r.getCell(10).alignment = { horizontal: "right" };
+  r.getCell(11).alignment = { horizontal: "center" };
 });
 s1.freezePanes = "A2";
 
@@ -166,6 +202,7 @@ s2.columns = [
   { header: "分组", key: "group", width: 12 }, { header: "总标的", key: "total", width: 8 },
   { header: "上涨", key: "up", width: 8 }, { header: "下跌", key: "down", width: 8 },
   { header: "上涨率↑", key: "upRatio", width: 10 }, { header: "平均收益", key: "avgReturn", width: 12 },
+  { header: "均胜↑", key: "avgWin", width: 10 }, { header: "均败↓", key: "avgLoss", width: 10 }, { header: "赔率", key: "winLossRatio", width: 10 },
 ];
 const h2 = s2.getRow(1);
 h2.font = hFont; h2.fill = hFill(blue); h2.alignment = { vertical: "middle", horizontal: "center" };
@@ -175,6 +212,9 @@ stratRank.forEach((s, i) => {
   r.eachCell(c => cBorder(c));
   [1, 4, 5, 6, 7].forEach(j => r.getCell(j).alignment = { horizontal: "center" });
   r.getCell(8).alignment = { horizontal: "right" };
+  r.getCell(9).alignment = { horizontal: "right" };
+  r.getCell(10).alignment = { horizontal: "right" };
+  r.getCell(11).alignment = { horizontal: "center" };
 });
 s2.freezePanes = "A2";
 

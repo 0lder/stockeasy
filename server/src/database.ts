@@ -139,6 +139,17 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // 股价缓存表（日内复用，减少新浪API请求）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS stock_prices (
+      stock_code TEXT PRIMARY KEY,
+      stock_name TEXT,
+      current_price REAL,
+      yesterday_close REAL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
   // 保存到磁盘
   saveToDisk();
 
@@ -630,5 +641,39 @@ export function deleteSetting(key: string): void {
   if (!db) throw new Error("Database not initialized");
   db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
   db.run("DELETE FROM settings WHERE key = ?", [key]);
+  saveToDisk();
+}
+
+// ── 股价缓存 ──
+export function getCachedPrices(codes: string[]): Map<string, {current: number; yest: number}> {
+  if (!db) throw new Error("Database not initialized");
+  const today = new Date().toISOString().slice(0, 10);
+  const result = new Map<string, {current: number; yest: number}>();
+  for (const code of codes) {
+    const stmt = db.prepare("SELECT current_price, yesterday_close, updated_at FROM stock_prices WHERE stock_code = ?");
+    stmt.bind([code]);
+    if (stmt.step()) {
+      const row = stmt.getAsObject() as { current_price: number; yesterday_close: number; updated_at: string };
+      if (row.updated_at === today) {
+        result.set(code, { current: row.current_price, yest: row.yesterday_close });
+      }
+    }
+    stmt.free();
+  }
+  return result;
+}
+
+export function setCachedPrice(code: string, name: string, current: number, yest: number): void {
+  if (!db) return;
+  const today = new Date().toISOString().slice(0, 10);
+  db.run(
+    "INSERT OR REPLACE INTO stock_prices (stock_code, stock_name, current_price, yesterday_close, updated_at) VALUES (?, ?, ?, ?, ?)",
+    [code, name, current, yest, today]
+  );
+}
+
+export function clearPriceCache(): void {
+  if (!db) return;
+  db.run("DELETE FROM stock_prices");
   saveToDisk();
 }
