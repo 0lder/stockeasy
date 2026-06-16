@@ -7,13 +7,19 @@
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev",
     "build": "cd client && npm run build",
-    "start": "cd server && npm start"
+    "start": "cd server && npm start",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop stockeasy",
+    "pm2:restart": "pm2 restart stockeasy",
+    "pm2:logs": "pm2 logs stockeasy",
+    "pm2:status": "pm2 status"
   },
   "devDependencies": {
     "@types/morgan": "^1.9.10",
     "concurrently": "^9.0.0"
   },
   "dependencies": {
-    "morgan": "^1.11.0"
+    "morgan": "^1.11.0",
+    "pm2": "^7.0.1"
   }
 }
