@@ -8,7 +8,7 @@ const clientDist = path.resolve(__dirname, "../../client/dist");
 
 const router = Router();
 
-router.get("/health", (_req, res) => {
+router.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
