@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import ExcelJS from "exceljs";
 import { queryWencai } from "./wencai.js";
-import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist, getSetting, setSetting, deleteSetting, addHolding, getHoldings, updateHolding, deleteHolding, getCachedPrices, setCachedPrice, clearPriceCache } from "./database.js";
+import { initDatabase, recordQuery, getQueryHistory, deleteQueryHistory, clearQueryHistory, createStrategy, getStrategies, updateStrategy, deleteStrategy, addToWatchlist, getWatchlist, updateWatchItem, removeFromWatchlist, getWatchlistGroups, createSnapshot, replaceSnapshot, getSnapshots, getSnapshotStocks, deleteSnapshot, getAllSnapshots, getAlerts, createAlert, updateAlert, deleteAlert, updateAlertTriggered, createAlertsFromWatchlist, getSetting, setSetting, deleteSetting, addHolding, getHoldings, updateHolding, deleteHolding, getCachedPrices, setCachedPrice, clearPriceCache } from "./database.js";
 import Iconv from "iconv-lite";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -152,13 +152,13 @@ app.post("/api/strategies", async (req, res) => {
   }
 });
 
-// 更新策略（自动重新生成快照）
+// 更新策略（自动重新生成快照，替换旧快照）
 app.put("/api/strategies/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "无效的 ID" });
     updateStrategy(id, req.body);
-    // 如果查询条件变了，重新生成快照
+    // 如果查询条件变了，重新生成快照（替换旧的）
     let snapshot_id = null;
     let stocks = 0;
     const query_text = req.body.query_text;
@@ -171,7 +171,7 @@ app.put("/api/strategies/:id", async (req, res) => {
           price: parseFloat(r.最新价 || 0),
         })).filter((r: any) => r.code && r.name);
         if (stockList.length > 0) {
-          snapshot_id = createSnapshot(id, stockList);
+          snapshot_id = replaceSnapshot(id, stockList);
           stocks = stockList.length;
         }
       } catch (_e) {
@@ -338,7 +338,7 @@ function computeSnapshotStats(prevStocks: any[], currStocks: { code: string; nam
 // API: Strategy Snapshots (策略快照)
 // ============================================================
 
-// 创建快照
+// 重新生成快照（替换旧快照，每个策略只保留一组）
 app.post("/api/strategies/:id/snapshot", async (req, res) => {
   try {
     const strategyId = parseInt(req.params.id);
@@ -353,7 +353,7 @@ app.post("/api/strategies/:id/snapshot", async (req, res) => {
       return res.status(400).json({ error: "股票列表不能为空" });
     }
 
-    const snapshotId = createSnapshot(strategyId, stocks.map((s: any) => ({
+    const snapshotId = replaceSnapshot(strategyId, stocks.map((s: any) => ({
       code: s.股票代码 || s.code || s.stock_code,
       name: s.股票简称 || s.name || s.stock_name,
       price: parseFloat(s.最新价 || s.price || 0),
@@ -361,7 +361,7 @@ app.post("/api/strategies/:id/snapshot", async (req, res) => {
 
     res.json({ success: true, id: snapshotId, stock_count: stocks.length });
   } catch (error: any) {
-    res.status(500).json({ error: "创建快照失败", detail: error.message });
+    res.status(500).json({ error: "重新生成快照失败", detail: error.message });
   }
 });
 
@@ -571,54 +571,66 @@ app.get("/api/snapshots/:id", async (req, res) => {
     const stocks = getSnapshotStocks(snapshotId);
     if (stocks.length === 0) return res.json({ stocks: [], stats: {} });
 
-    // 重新执行策略查询获取最新行情（平铺格式，含 最新价 最新涨跌幅）
-    const strategy = getStrategies().find(s => s.id === parseInt(req.params.id));
-    const queryText = strategy?.query_text || stocks.map(s => s.stock_code).join(" ");
-    const priceResult = await queryWencai(queryText, stocks.length * 2);
+    // 用 Sina API + 缓存获取当前行情
+    const allCodes = stocks.map(s => s.stock_code.replace(/\.(SZ|SH|BJ)$/i, ""));
+    const cached = getCachedPrices(allCodes);
+    const currentPrices: Record<string, number> = {};
 
-    // 数据已由 wencai.ts 归一化为扁平格式（股票代码/股票简称/最新价/最新涨跌幅）
-    const priceMap: Record<string, any> = {};
-    for (const row of (priceResult.data || [])) {
-      const code = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
-      if (code) priceMap[code] = row;
+    for (const code of allCodes) {
+      const hit = cached.get(code);
+      if (hit) currentPrices[code] = hit.current;
+    }
+
+    const needSina = allCodes.filter(c => !currentPrices[c]);
+    if (needSina.length > 0) {
+      const BATCH = 100;
+      for (let i = 0; i < needSina.length; i += BATCH) {
+        const batch = needSina.slice(i, i + BATCH);
+        const sinaCodes = batch.map(c => {
+          if (c.startsWith("6")) return `sh${c}`;
+          if (c.startsWith("4") || c.startsWith("8")) return `bj${c}`;
+          return `sz${c}`;
+        });
+        const url = `http://hq.sinajs.cn/list=${sinaCodes.join(",")}`;
+        try {
+          const http = await import("http");
+          const buffer = await new Promise<Buffer>((resolve, reject) => {
+            http.get(url, { headers: { "Referer": "https://finance.sina.com.cn" } }, (r: any) => {
+              const chunks: Buffer[] = [];
+              r.on("data", (c: Buffer) => chunks.push(c));
+              r.on("end", () => resolve(Buffer.concat(chunks)));
+            }).on("error", reject);
+          });
+          const data = Iconv.decode(buffer, "gbk");
+          for (const line of data.split("\n")) {
+            if (!line.trim()) continue;
+            const m = line.match(/hq_str_(s[hz]\d+)="([^"]+)"/);
+            if (!m) continue;
+            const parts = m[2].split(",");
+            const code = m[1].replace(/^(sh|sz|bj)/, "");
+            const cur = parseFloat(parts[3]);
+            const yc = parseFloat(parts[2]);
+            if (code && !isNaN(cur) && cur > 0) {
+              currentPrices[code] = cur;
+              setCachedPrice(code, parts[0] || "", cur, yc);
+            }
+          }
+        } catch (_) { /* skip failed batch */ }
+      }
     }
 
     // 合并数据
     const enriched = stocks.map(s => {
-      const lookupCode = s.stock_code.replace(/\.(SZ|SH)$/i, "");
-      const p = priceMap[lookupCode] || {};
-      const currentPrice = parseFloat(p.最新价 || 0);
-      const changePct = parseFloat(p.最新涨跌幅 || 0);
-
+      const lookupCode = s.stock_code.replace(/\.(SZ|SH|BJ)$/i, "");
       return {
         stock_code: s.stock_code,
         stock_name: s.stock_name,
         price_at_snapshot: s.price_at_snapshot,
-        current_price: currentPrice || "-",
-        change_pct: changePct || "-",
+        current_price: currentPrices[lookupCode] || "-",
       };
     });
 
-    // 简化统计：只算从快照到现在的涨跌幅
-    const calcStats = () => {
-      let up = 0, down = 0, flat = 0;
-      enriched.forEach(s => {
-        const snapPrice = s.price_at_snapshot;
-        const curPrice = s.current_price;
-        if (snapPrice && curPrice !== "-") {
-          const chg = (Number(curPrice) - Number(snapPrice)) / Number(snapPrice) * 100;
-          if (chg > 0) up++;
-          else if (chg < 0) down++;
-          else flat++;
-        }
-      });
-      const total = up + down + flat;
-      return {
-        snapshot_today: { up, total, ratio: total > 0 ? `${(up / total * 100).toFixed(1)}%` : "-" },
-      };
-    };
-
-    res.json({ stocks: enriched, stats: calcStats() });
+    res.json({ stocks: enriched });
   } catch (error: any) {
     console.error("[snapshot detail]", error);
     res.status(500).json({ error: "获取快照详情失败", detail: error.message });

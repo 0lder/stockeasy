@@ -512,6 +512,19 @@ export function createSnapshot(strategyId: number, stocks: { code: string; name:
   return snapshotId;
 }
 
+// 替换策略快照：删除旧快照 → 创建新快照（每个策略只保留一组）
+export function replaceSnapshot(strategyId: number, stocks: { code: string; name: string; price?: number }[]): number {
+  if (!db) throw new Error("Database not initialized");
+  // 删除该策略所有旧快照（含关联的 snapshot_stocks）
+  const oldSnaps = getSnapshots(strategyId);
+  for (const snap of oldSnaps) {
+    db!.run("DELETE FROM snapshot_stocks WHERE snapshot_id = ?", [snap.id]);
+    db!.run("DELETE FROM strategy_snapshots WHERE id = ?", [snap.id]);
+  }
+  // 创建新快照
+  return createSnapshot(strategyId, stocks);
+}
+
 // 获取策略的所有快照
 export function getSnapshots(strategyId: number): StrategySnapshot[] {
   if (!db) throw new Error("Database not initialized");
