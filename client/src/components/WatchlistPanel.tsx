@@ -221,8 +221,8 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
 
   const getPriceColor = (p: PriceInfo | undefined) => {
     if (!p) return "text.secondary";
-    const chg = p.最新涨跌幅;
-    if (chg !== undefined && chg !== null) {
+    const chg = Number(p.最新涨跌幅);
+    if (!isNaN(chg)) {
       if (chg > 0) return "error.main";
       if (chg < 0) return "success.main";
     }
@@ -231,9 +231,9 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
 
   const getChangeText = (p: PriceInfo | undefined) => {
     if (!p) return "";
-    const price = p.最新价;
-    const chg = p.最新涨跌幅;
-    if (price !== undefined && price !== null && chg !== undefined && chg !== null) {
+    const price = Number(p.最新价);
+    const chg = Number(p.最新涨跌幅);
+    if (!isNaN(price) && !isNaN(chg)) {
       return `${price.toFixed(2)} (${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%)`;
     }
     return "";

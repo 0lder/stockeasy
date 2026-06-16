@@ -672,7 +672,16 @@ app.post("/api/watchlist/refresh", async (req, res) => {
       const batch = items.slice(i, i + batchSize);
       const queryText = batch.map(s => s.stock_code).join(",");
       const result = await queryWencai(queryText, batchSize);
-      if (result.data) allResults.push(...result.data);
+      if (result.data) {
+        // Normalize: empty string prices → null to avoid frontend crashes
+        for (const row of result.data) {
+          if (row["最新价"] === "" || row["最新价"] === undefined) row["最新价"] = null;
+          else if (typeof row["最新价"] === "string") row["最新价"] = parseFloat(row["最新价"]) || null;
+          if (row["最新涨跌幅"] === "" || row["最新涨跌幅"] === undefined) row["最新涨跌幅"] = null;
+          else if (typeof row["最新涨跌幅"] === "string") row["最新涨跌幅"] = parseFloat(row["最新涨跌幅"]) || 0;
+        }
+        allResults.push(...result.data);
+      }
       // 间隔一下避免触发风控
       if (i + batchSize < items.length) await new Promise(r => setTimeout(r, 500));
     }
