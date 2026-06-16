@@ -463,36 +463,68 @@ app.get("/api/snapshots/compare", async (req, res) => {
 
     const stocksA = getSnapshotStocks(idA);
     const stocksB = getSnapshotStocks(idB);
-    if (!stocksA.length || !stocksB.length) return res.status(404).json({ error: "快照不存在" });
+    if (!stocksA.length || !stocksB.length) return res.status(404).json({ error: "快照不存在或为空" });
 
-    // 用代码查最新行情
-    const allCodes = [...new Set([...stocksA.map(s => s.stock_code), ...stocksB.map(s => s.stock_code)])];
-    const priceResult = await queryWencai(allCodes.join(" "), allCodes.length);
+    // 用 Sina API + 缓存获取最新行情 (替代 wencai，避免超时)
+    const allCodes = [...new Set([...stocksA.map((s: any) => s.stock_code.replace(/\.(SZ|SH|BJ)$/i, "")), ...stocksB.map((s: any) => s.stock_code.replace(/\.(SZ|SH|BJ)$/i, ""))])];
 
-    // 构建价格映射
-    const priceMap: Record<string, number> = {};
-    for (const row of (priceResult.data || [])) {
-      for (const key of Object.keys(row)) {
-        if (Array.isArray(row[key])) {
-          for (const item of row[key]) {
-            const c = (item.代码 || item.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
-            if (c) {
-              priceMap[c] = parseFloat(item["收盘价:前复权"] || item.收盘价 || item.price || 0);
-            }
-          }
-        }
-      }
-      const c = (row.股票代码 || "").replace(/\.(SZ|SH)$/i, "");
-      if (c && !priceMap[c]) {
-        priceMap[c] = parseFloat(row.最新价 || row.price || 0);
+    // 1. Cache lookup
+    const cached = getCachedPrices(allCodes);
+    const currentPrices: Record<string, number> = {};
+    const needSina: string[] = [];
+
+    for (const code of allCodes) {
+      const hit = cached.get(code);
+      if (hit) {
+        currentPrices[code] = hit.current;
+      } else {
+        needSina.push(code);
       }
     }
 
-    const normalize = (code: string) => code.replace(/\.(SZ|SH)$/i, "");
+    // 2. Cache miss → 查新浪 (批量)
+    if (needSina.length > 0) {
+      const BATCH = 100;
+      for (let i = 0; i < needSina.length; i += BATCH) {
+        const batch = needSina.slice(i, i + BATCH);
+        const sinaCodes = batch.map(c => {
+          if (c.startsWith("6")) return `sh${c}`;
+          if (c.startsWith("4") || c.startsWith("8")) return `bj${c}`;
+          return `sz${c}`;
+        });
+        const url = `http://hq.sinajs.cn/list=${sinaCodes.join(",")}`;
+        try {
+          const http = await import("http");
+          const buffer = await new Promise<Buffer>((resolve, reject) => {
+            http.get(url, { headers: { "Referer": "https://finance.sina.com.cn" } }, (r: any) => {
+              const chunks: Buffer[] = [];
+              r.on("data", (c: Buffer) => chunks.push(c));
+              r.on("end", () => resolve(Buffer.concat(chunks)));
+            }).on("error", reject);
+          });
+          const data = Iconv.decode(buffer, "gbk");
+          for (const line of data.split("\n")) {
+            if (!line.trim()) continue;
+            const m = line.match(/hq_str_(s[hz]\d+)="([^"]+)"/);
+            if (!m) continue;
+            const parts = m[2].split(",");
+            const code = m[1].replace(/^(sh|sz|bj)/, "");
+            const cur = parseFloat(parts[3]);
+            const yc = parseFloat(parts[2]);
+            if (code && !isNaN(cur) && cur > 0) {
+              currentPrices[code] = cur;
+              setCachedPrice(code, parts[0] || "", cur, yc);
+            }
+          }
+        } catch (_) { /* skip failed batch */ }
+      }
+    }
+
+    const normalize = (code: string) => code.replace(/\.(SZ|SH|BJ)$/i, "");
     const mapStocks = (snaps: any[]) => snaps.map((s: any) => ({
-      code: s.stock_code, name: s.stock_name,
+      code: normalize(s.stock_code), name: s.stock_name,
       price: s.price_at_snapshot,
-      current_price: priceMap[normalize(s.stock_code)] || "-",
+      current_price: currentPrices[normalize(s.stock_code)] || "-",
     }));
 
     const mappedA = mapStocks(stocksA);

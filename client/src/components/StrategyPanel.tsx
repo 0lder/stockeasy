@@ -107,6 +107,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
   const [selectedSnaps, setSelectedSnaps] = useState<number[]>([]);
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string>("");
 
   const fetchStrategies = async () => {
     setLoading(true);
@@ -214,10 +215,19 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
     if (selectedSnaps.length !== 2) return;
     setCompareLoading(true);
     setCompareResult(null);
+    setCompareError("");
     try {
       const res = await fetch(`/api/snapshots/compare?ids=${selectedSnaps[0]},${selectedSnaps[1]}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "请求失败" }));
+        setCompareError(err.error || err.detail || `HTTP ${res.status}`);
+        setCompareLoading(false);
+        return;
+      }
       setCompareResult(await res.json());
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      setCompareError(e.message || "网络错误");
+    }
     setCompareLoading(false);
   };
 
@@ -539,6 +549,11 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
                               <Box sx={{ textAlign: "center", padding: "48px" }}>
                                 <CircularProgress size={40} sx={{ marginBottom: "12px" }} />
                                 <Typography color="text.secondary">对比计算中...</Typography>
+                              </Box>
+                            )}
+                            {compareError && (
+                              <Box sx={{ marginTop: "6px", padding: "16px", backgroundColor: "error.light", borderRadius: "8px" }}>
+                                <Typography color="error.contrastText">⚠️ {compareError}</Typography>
                               </Box>
                             )}
                             {compareResult && (
