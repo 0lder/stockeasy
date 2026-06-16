@@ -1439,7 +1439,7 @@ app.get("/api/dashboard", async (_req, res) => {
         avgReturn: g.countReturn > 0 ? +(g.totalReturn / g.countReturn).toFixed(2) : 0,
         avgWin: g.up > 0 ? +(g.winSum / g.up).toFixed(2) : 0,
         avgLoss: g.down > 0 ? +(g.lossSum / g.down).toFixed(2) : 0,
-        winLossRatio: g.lossSum > 0 ? +(g.winSum / g.lossSum).toFixed(2) : 0,
+        winLossRatio: g.lossSum > 0 ? +(g.winSum / g.lossSum).toFixed(2) : (g.winSum > 0 ? 9999 : 0),
       }))
       .sort((a: any, b: any) => b.upRatio - a.upRatio)
       .map((g: any, i: number) => ({ rank: i + 1, ...g }));
@@ -1466,7 +1466,7 @@ app.get("/api/dashboard", async (_req, res) => {
         avgReturn: st.countReturn > 0 ? +(st.totalReturn / st.countReturn).toFixed(2) : 0,
         avgWin: st.up > 0 ? +(st.winSum / st.up).toFixed(2) : 0,
         avgLoss: st.down > 0 ? +(st.lossSum / st.down).toFixed(2) : 0,
-        winLossRatio: st.lossSum > 0 ? +(st.winSum / st.lossSum).toFixed(2) : 0,
+        winLossRatio: st.lossSum > 0 ? +(st.winSum / st.lossSum).toFixed(2) : (st.winSum > 0 ? 9999 : 0),
       }))
       .sort((a: any, b: any) => b.upRatio - a.upRatio)
       .map((s: any, i: number) => ({ rank: i + 1, ...s }));

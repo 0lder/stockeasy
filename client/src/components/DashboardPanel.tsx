@@ -137,7 +137,7 @@ export default function DashboardPanel(): JSX.Element {
                 <TableCell><UpDownChip value={s.avgWin} /></TableCell>
                 <TableCell><UpDownChip value={s.avgLoss} /></TableCell>
                 <TableCell>
-                  <Chip size="small" label={s.winLossRatio > 0 ? `1:${s.winLossRatio.toFixed(2)}` : "N/A"} sx={{
+                  <Chip size="small" label={s.winLossRatio > 999 ? "∞ (零亏损)" : s.winLossRatio > 0 ? `1:${s.winLossRatio.toFixed(2)}` : "N/A"} sx={{
                     bgcolor: s.winLossRatio > 1.5 ? "#E8F5E9" : s.winLossRatio > 0.8 ? "#FFF3E0" : "#FFE0E0",
                     color: s.winLossRatio > 1.5 ? "#2E7D32" : s.winLossRatio > 0.8 ? "#E65100" : "#C62828",
                     fontWeight: 600,
