@@ -5,7 +5,8 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 
 import { initDatabase } from "./database.js";
-import { errorHandler } from "./middleware/error-handler.js";
+import { requestLogger } from "./middleware/request-logger.js";
+import { errorHandler, notFound } from "./middleware/error-handler.js";
 
 // Route modules
 import queryRouter from "./routes/query.js";
@@ -26,16 +27,18 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// --- Global middleware ---
 app.use(cors());
 app.use(express.json());
+app.use(requestLogger);
 
-// Static frontend
+// --- Static frontend ---
 const clientDist = path.resolve(__dirname, "../../client/dist");
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
 }
 
-// Mount route modules
+// --- API routes ---
 app.use(queryRouter);
 app.use(strategiesRouter);
 app.use(snapshotsRouter);
@@ -46,12 +49,26 @@ app.use(exportRouter);
 app.use(stocksRouter);
 app.use(diagnoseRouter);
 app.use(dashboardRouter);
-app.use(healthRouter);  // contains SPA fallback (*)
+app.use(healthRouter);
 
-// Global error handler
+// --- 404 vs SPA fallback ---
+// API paths that don't match get a JSON 404
+app.use("/api", notFound);
+
+// Everything else → SPA (frontend routing)
+app.get("*", (_req, res) => {
+  const indexHtml = path.resolve(clientDist, "index.html");
+  if (fs.existsSync(indexHtml)) {
+    res.sendFile(indexHtml);
+  } else {
+    res.status(404).json({ error: "Frontend not built yet. Run: cd client && npm run build" });
+  }
+});
+
+// --- Global error handler (must be last) ---
 app.use(errorHandler);
 
-// Start
+// --- Start ---
 async function start() {
   await initDatabase();
 

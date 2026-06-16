@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getStrategies, getSnapshots, getSnapshotStocks, getCachedPrices, setCachedPrice } from "../database.js";
+import { getStrategies, getSnapshots, getSnapshotStocks } from "../database.js";
 import { fetchPrices, stripSuffix } from "../services/price.js";
 
 const router = Router();
