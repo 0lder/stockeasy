@@ -1,12 +1,13 @@
 import { JSX } from "react";
 import { Box, Tab, Tabs, Badge, useTheme } from "@mui/material";
+import DashboardIcon from "@mui/icons-material/Dashboard";
 import SearchIcon from "@mui/icons-material/Search";
 import AssignmentIcon from "@mui/icons-material/Assignment";
 import StarIcon from "@mui/icons-material/Star";
 import BuildIcon from "@mui/icons-material/Build";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 
-export type TabKey = "search" | "strategies" | "watchlist" | "builder" | "alerts";
+export type TabKey = "search" | "dashboard" | "strategies" | "watchlist" | "builder" | "alerts";
 
 interface TabItem {
   key: TabKey;
@@ -16,6 +17,7 @@ interface TabItem {
 
 const TABS: TabItem[] = [
   { key: "search", icon: <SearchIcon />, label: "查询" },
+  { key: "dashboard", icon: <DashboardIcon />, label: "仪表" },
   { key: "strategies", icon: <AssignmentIcon />, label: "策略" },
   { key: "watchlist", icon: <StarIcon />, label: "自选" },
   { key: "builder", icon: <BuildIcon />, label: "条件" },

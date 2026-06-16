@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/ThemeContext.tsx","./src/main.tsx","./src/theme.ts","./src/components/AlertPanel.tsx","./src/components/ConditionBuilder.tsx","./src/components/DashboardPanel.tsx","./src/components/Sidebar.tsx","./src/components/StrategyPanel.tsx","./src/components/WatchlistPanel.tsx"],"errors":true,"version":"5.9.3"}

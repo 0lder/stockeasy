@@ -33,6 +33,7 @@ const sinaCodes = allStocks.map(s => {
 });
 
 const currentPrices = {};
+const yesterdayClose = {};
 const BATCH = 100;
 for (let i = 0; i < sinaCodes.length; i += BATCH) {
   const batch = sinaCodes.slice(i, i + BATCH).join(",");
@@ -46,17 +47,21 @@ for (let i = 0; i < sinaCodes.length; i += BATCH) {
       if (!m) continue;
       const parts = m[2].split(",");
       const code = m[1].replace(/^(sh|sz|bj)/, "");
-      const price = parseFloat(parts[3]); // current price is index 3
+      const price = parseFloat(parts[3]); // current price
+      const yc = parseFloat(parts[2]);    // yesterday close
       if (code && !isNaN(price) && price > 0) currentPrices[code] = price;
+      if (code && !isNaN(yc) && yc > 0) yesterdayClose[code] = yc;
     }
   } catch (_e) { /* skip batch */ }
 }
 
-// ── Calculate changes ──
+// ── Calculate changes (当日快照用昨收作基准) ──
+const today = new Date().toISOString().slice(0, 10);
 let hasPriceCount = 0;
 for (const s of allStocks) {
   const cur = currentPrices[s.code];
-  if (cur && s.snapPrice) {
+  const baseline = s.snapDate === today ? yesterdayClose[s.code] : s.snapPrice;
+  if (cur && baseline) {
     s.currentPrice = cur;
     s.changePct = (cur - s.snapPrice) / s.snapPrice * 100;
     hasPriceCount++;

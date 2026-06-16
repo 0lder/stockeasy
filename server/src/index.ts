@@ -1308,6 +1308,176 @@ app.post("/api/diagnose/:code", async (req, res) => {
 });
 
 // ============================================================
+// ============================================================
+// Dashboard API — 策略仪表盘（含排名、重叠度、实时行情）
+// ============================================================
+
+app.get("/api/dashboard", async (_req, res) => {
+  try {
+    const strategies = getStrategies();
+    const http = await import("http");
+
+    // 1. Collect all stocks from latest snapshots
+    const allStocks: any[] = [];
+    for (const s of strategies) {
+      const snaps = getSnapshots(s.id);
+      if (!snaps.length) continue;
+      const snap = snaps[0];
+      const stocksList = getSnapshotStocks(snap.id);
+      stocksList.forEach((st: any) => {
+        allStocks.push({
+          rawCode: st.stock_code,
+          code: (st.stock_code || "").replace(/\.(SZ|SH|BJ)$/i, ""),
+          name: st.stock_name,
+          snapPrice: st.price_at_snapshot,
+          snapDate: snap.snapshot_date,
+          strategyId: s.id,
+          strategyName: s.name,
+          strategyGroup: s.group_name,
+        });
+      });
+    }
+
+    // 2. Query Sina for current price + yesterday close
+    const sinaCodes = allStocks.map((s: any) => {
+      const raw = s.rawCode || "";
+      return raw.endsWith(".SZ") ? `sz${s.code}` : raw.endsWith(".BJ") ? `bj${s.code}` : `sh${s.code}`;
+    });
+
+    const currentPrices: Record<string, number> = {};
+    const yesterdayClose: Record<string, number> = {};
+    const BATCH = 100;
+
+    for (let i = 0; i < sinaCodes.length; i += BATCH) {
+      const batch = sinaCodes.slice(i, i + BATCH).join(",");
+      const url = `http://hq.sinajs.cn/list=${batch}`;
+      try {
+        const data = await new Promise<string>((resolve, reject) => {
+          http.get(url, { headers: { "Referer": "https://finance.sina.com.cn" } }, (r: any) => {
+            let b = ""; r.on("data", (c: any) => b += c); r.on("end", () => resolve(b));
+          }).on("error", reject);
+        });
+        for (const line of data.split("\n")) {
+          if (!line.trim()) continue;
+          const m = line.match(/hq_str_(s[hz]\d+)="([^"]+)"/);
+          if (!m) continue;
+          const parts = m[2].split(",");
+          const code = m[1].replace(/^(sh|sz|bj)/, "");
+          const cur = parseFloat(parts[3]);
+          const yc = parseFloat(parts[2]);
+          if (code && !isNaN(cur) && cur > 0) currentPrices[code] = cur;
+          if (code && !isNaN(yc) && yc > 0) yesterdayClose[code] = yc;
+        }
+      } catch (_) { /* skip */ }
+    }
+
+    // 3. Calculate changes (use yesterday close for same-day snapshots)
+    const today = new Date().toISOString().slice(0, 10);
+    for (const s of allStocks) {
+      const cur = currentPrices[s.code];
+      // 当日快照用昨收作基准
+      const baseline = s.snapDate === today ? yesterdayClose[s.code] : s.snapPrice;
+      if (cur && baseline) {
+        s.currentPrice = cur;
+        s.changePct = (cur - baseline) / baseline * 100;
+        s.baselineUsed = s.snapDate === today ? "昨收" : "快照价";
+      } else {
+        s.currentPrice = null;
+        s.changePct = null;
+        s.baselineUsed = "-";
+      }
+    }
+
+    // 4. Group ranking
+    const groupMap: Record<string, any> = {};
+    for (const s of allStocks) {
+      const g = s.strategyGroup;
+      if (!groupMap[g]) groupMap[g] = { names: new Set(), up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0 };
+      groupMap[g].names.add(s.strategyName);
+      groupMap[g].total++;
+      if (s.changePct === null) continue;
+      groupMap[g].totalReturn += s.changePct;
+      groupMap[g].countReturn++;
+      if (s.changePct > 0) groupMap[g].up++; else if (s.changePct < 0) groupMap[g].down++; else groupMap[g].flat++;
+    }
+
+    const groupRank = Object.entries(groupMap)
+      .map(([name, g]: any) => ({
+        group: name,
+        strategies: [...g.names].join(" + "),
+        total: g.total, up: g.up, down: g.down, flat: g.flat,
+        upRatio: g.countReturn > 0 ? +(g.up / g.countReturn * 100).toFixed(1) : 0,
+        avgReturn: g.countReturn > 0 ? +(g.totalReturn / g.countReturn).toFixed(2) : 0,
+      }))
+      .sort((a: any, b: any) => b.upRatio - a.upRatio)
+      .map((g: any, i: number) => ({ rank: i + 1, ...g }));
+
+    // 5. Strategy ranking
+    const stratMap: Record<string, any> = {};
+    for (const s of allStocks) {
+      const key = s.strategyName;
+      if (!stratMap[key]) stratMap[key] = { group: s.strategyGroup, up: 0, down: 0, flat: 0, total: 0, totalReturn: 0, countReturn: 0 };
+      stratMap[key].total++;
+      if (s.changePct === null) continue;
+      stratMap[key].totalReturn += s.changePct;
+      stratMap[key].countReturn++;
+      if (s.changePct > 0) stratMap[key].up++; else if (s.changePct < 0) stratMap[key].down++; else stratMap[key].flat++;
+    }
+
+    const strategyRank = Object.entries(stratMap)
+      .map(([name, st]: any) => ({
+        name, group: st.group,
+        total: st.total, up: st.up, down: st.down,
+        upRatio: st.countReturn > 0 ? +(st.up / st.countReturn * 100).toFixed(1) : 0,
+        avgReturn: st.countReturn > 0 ? +(st.totalReturn / st.countReturn).toFixed(2) : 0,
+      }))
+      .sort((a: any, b: any) => b.upRatio - a.upRatio)
+      .map((s: any, i: number) => ({ rank: i + 1, ...s }));
+
+    // 6. Overlap matrix
+    const latestSnapshots: Record<number, number> = {};
+    for (const sid of strategies.map((s: any) => s.id)) {
+      const snaps = getSnapshots(sid);
+      if (snaps.length) latestSnapshots[sid] = snaps[0].id;
+    }
+    const overlapMatrix: any[] = [];
+    const sids = Object.keys(latestSnapshots).map(Number);
+    for (let i = 0; i < sids.length; i++) {
+      for (let j = i + 1; j < sids.length; j++) {
+        const sid1 = sids[i], sid2 = sids[j];
+        const stocks1 = new Set(getSnapshotStocks(latestSnapshots[sid1]).map((st: any) => st.stock_code));
+        const stocks2 = new Set(getSnapshotStocks(latestSnapshots[sid2]).map((st: any) => st.stock_code));
+        const overlap = [...stocks1].filter(c => stocks2.has(c)).length;
+        const total = Math.min(stocks1.size, stocks2.size);
+        if (overlap > 0) {
+          const n1 = strategies.find((s: any) => s.id === sid1)?.name || "";
+          const n2 = strategies.find((s: any) => s.id === sid2)?.name || "";
+          overlapMatrix.push({
+            strategyA: n1, groupA: strategies.find((s: any) => s.id === sid1)?.group_name || "",
+            strategyB: n2, groupB: strategies.find((s: any) => s.id === sid2)?.group_name || "",
+            overlap, totalA: stocks1.size, totalB: stocks2.size,
+            ratio: total > 0 ? +(overlap / total * 100).toFixed(1) : 0,
+          });
+        }
+      }
+    }
+    overlapMatrix.sort((a, b) => b.overlap - a.overlap);
+
+    res.json({
+      date: today,
+      totalStrategies: strategies.length,
+      totalStocks: allStocks.length,
+      priceCoverage: allStocks.filter((s: any) => s.changePct !== null).length,
+      groupRank,
+      strategyRank,
+      overlapMatrix,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: "仪表盘数据获取失败", detail: error.message });
+  }
+});
+
+// ============================================================
 // Health
 // ============================================================
 

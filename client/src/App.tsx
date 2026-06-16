@@ -44,6 +44,7 @@ import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import SettingsIcon from "@mui/icons-material/Settings";
 import Sidebar, { TabKey } from "./components/Sidebar";
+import DashboardPanel from "./components/DashboardPanel";
 import StrategyPanel from "./components/StrategyPanel";
 import WatchlistPanel from "./components/WatchlistPanel";
 import ConditionBuilder from "./components/ConditionBuilder";
@@ -671,6 +672,7 @@ export default function App(): JSX.Element {
           )}
 
           {activeTab === "strategies" && <StrategyPanel onRunStrategy={doSearch} />}
+          {activeTab === "dashboard" && <DashboardPanel />}
           {activeTab === "watchlist" && <WatchlistPanel onSearch={doSearch} />}
           {activeTab === "builder" && <ConditionBuilder onQuery={doSearch} />}
           {activeTab === "alerts" && <AlertPanel />}
