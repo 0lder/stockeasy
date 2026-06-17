@@ -639,15 +639,20 @@ export function getCachedPrices(codes: string[]): Map<string, { current: number;
   const result = new Map<string, { current: number; yest: number }>();
   if (!codes.length) return result;
 
+  const CACHE_TTL_MS = 60000; // 60 seconds — during trading hours prices change fast
+  const now = Date.now();
   const today = new Date().toISOString().slice(0, 10);
   const stmt = db.prepare("SELECT stock_code, current_price, yesterday_close, updated_at FROM stock_prices WHERE stock_code = ?");
   for (const code of codes) {
     stmt.bind([code]);
     if (stmt.step()) {
       const row = stmt.getAsObject() as any;
-      // TTL check: only reuse if cached today
+      // TTL check: same day AND less than 60 seconds old
       if (row.updated_at && row.updated_at.startsWith(today)) {
-        result.set(code, { current: row.current_price, yest: row.yesterday_close });
+        const cachedAt = new Date(row.updated_at).getTime();
+        if (now - cachedAt < CACHE_TTL_MS) {
+          result.set(code, { current: row.current_price, yest: row.yesterday_close });
+        }
       }
     }
     stmt.reset();
