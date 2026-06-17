@@ -1,14 +1,18 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { CssBaseline } from "@mui/material";
-import App from "./App";
+import { BrowserRouter } from "react-router-dom";
 import { CustomThemeProvider } from "./ThemeContext";
+import { AuthProvider } from "./AuthContext";
+import App from "./App";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <CustomThemeProvider>
-      <CssBaseline />
-      <App />
-    </CustomThemeProvider>
+    <BrowserRouter>
+      <CustomThemeProvider>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </CustomThemeProvider>
+    </BrowserRouter>
   </StrictMode>
 );

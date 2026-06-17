@@ -1,4 +1,5 @@
 import { JSX } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Box, Tab, Tabs, Badge, useTheme } from "@mui/material";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import SearchIcon from "@mui/icons-material/Search";
@@ -11,28 +12,39 @@ export type TabKey = "search" | "dashboard" | "strategies" | "watchlist" | "buil
 
 interface TabItem {
   key: TabKey;
+  path: string;
   icon: JSX.Element;
   label: string;
 }
 
 const TABS: TabItem[] = [
-  { key: "search", icon: <SearchIcon />, label: "查询" },
-  { key: "dashboard", icon: <DashboardIcon />, label: "仪表" },
-  { key: "strategies", icon: <AssignmentIcon />, label: "策略" },
-  { key: "watchlist", icon: <StarIcon />, label: "自选" },
-  { key: "builder", icon: <BuildIcon />, label: "条件" },
-  { key: "alerts", icon: <NotificationsIcon />, label: "告警" },
+  { key: "search", path: "/search", icon: <SearchIcon />, label: "查询" },
+  { key: "dashboard", path: "/dashboard", icon: <DashboardIcon />, label: "仪表" },
+  { key: "strategies", path: "/strategies", icon: <AssignmentIcon />, label: "策略" },
+  { key: "watchlist", path: "/watchlist", icon: <StarIcon />, label: "自选" },
+  { key: "builder", path: "/builder", icon: <BuildIcon />, label: "条件" },
+  { key: "alerts", path: "/alerts", icon: <NotificationsIcon />, label: "告警" },
 ];
 
+// map pathname → TabKey
+function pathToTab(path: string): TabKey {
+  for (const t of TABS) {
+    if (path === t.path || path.startsWith(t.path + "?")) return t.key;
+  }
+  return "search";
+}
+
 interface Props {
-  activeTab: TabKey;
-  onTabChange: (tab: TabKey) => void;
   badges?: Partial<Record<TabKey, number>>;
 }
 
-export default function Sidebar({ activeTab, onTabChange, badges }: Props): JSX.Element {
+export default function Sidebar({ badges }: Props): JSX.Element {
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === "dark";
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const activeTab = pathToTab(location.pathname);
 
   return (
     <Box
@@ -57,7 +69,10 @@ export default function Sidebar({ activeTab, onTabChange, badges }: Props): JSX.
       <Tabs
         orientation="vertical"
         value={activeTab}
-        onChange={(_, value) => onTabChange(value)}
+        onChange={(_, value) => {
+          const tab = TABS.find((t) => t.key === value);
+          if (tab) navigate(tab.path);
+        }}
         sx={{
           width: "100%",
           "& .MuiTabs-indicator": {
