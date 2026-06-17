@@ -69,7 +69,7 @@ function AppShell() {
     try {
       const res = await api.get(`/api/history?page=${page}&pageSize=20`);
       const data = await res.json();
-      setHistory(data.records || []);
+      setHistory(data.items || []);
       setHistoryTotal(data.total || 0);
       setHistoryPage(data.page || 1);
     } catch {

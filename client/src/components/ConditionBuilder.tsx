@@ -38,7 +38,7 @@ const FIELD_GROUPS = [
       { id: "pe", label: "市盈率 (PE)" },
       { id: "pb", label: "市净率 (PB)" },
       { id: "ps", label: "市销率 (PS)" },
-      { id: " DividendYield", label: "股息率" },
+      { id: "DividendYield", label: "股息率" },
     ]
   },
   {
@@ -79,7 +79,7 @@ const FIELD_TO_WENCAI: Record<string, string> = {
   "pe": "市盈率",
   "pb": "市净率",
   "ps": "市销率",
-  " DividendYield": "股息率",
+  "DividendYield": "股息率",
   "net_profit_growth": "净利润增长率",
   "revenue_growth": "营业收入增长率",
   "eps_growth": "每股收益增长率",

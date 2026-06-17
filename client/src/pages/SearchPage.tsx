@@ -38,17 +38,6 @@ export default function SearchPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Handle URL `?q=` param on mount / change
-  useEffect(() => {
-    const q = searchParams.get("q") || "";
-    if (q && q !== query) {
-      setQuery(q);
-      doSearchInternal(q);
-    }
-    // only on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const doSearchInternal = useCallback(async (q: string) => {
     const trimmed = q.trim();
     if (!trimmed) return;
@@ -67,6 +56,16 @@ export default function SearchPage(): JSX.Element {
       setError(e.message);
     }
     setLoading(false);
+  }, []);
+
+  // Handle URL `?q=` param on mount
+  useEffect(() => {
+    const q = searchParams.get("q") || "";
+    if (q) {
+      doSearchInternal(q);
+    }
+    // only on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const doSearch = (q: string) => {
