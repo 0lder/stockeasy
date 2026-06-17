@@ -1,11 +1,11 @@
-import { initDatabase, getStrategies, getSnapshots, getSnapshotStocks, getCachedPrices, setCachedPrice } from "../src/database.js";
+import { initDatabase, getAllStrategies, getSnapshots, getSnapshotStocks, getCachedPrices, setCachedPrice } from "../src/database.js";
 import ExcelJS from "exceljs";
 import path from "path";
 import fs from "fs";
 import Iconv from "iconv-lite";
 
 await initDatabase();
-const strategies = getStrategies();
+const strategies = getAllStrategies();
 
 // Collect all stocks from all snapshots
 const allStocks = [];
@@ -276,9 +276,9 @@ const h5 = s5.getRow(1);
 h5.font = hFont; h5.fill = hFill(green); h5.alignment = { vertical: "middle", horizontal: "center" };
 h5.eachCell(c => cBorder(c));
 try {
-  const http = require("http");
+  const http = await import("http");
   const daily = await new Promise((res, rej) => {
-    http.get("http://localhost:3001/api/daily-summary", r => {
+    http.get("http://localhost:3001/api/daily-summary", { headers: { "X-Cron-Secret": process.env.CRON_SECRET || "stockeasy-cron-secret" } }, r => {
       let b = ""; r.on("data", c => b += c); r.on("end", () => res(JSON.parse(b)));
     }).on("error", rej);
   });

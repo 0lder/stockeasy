@@ -366,6 +366,16 @@ export function getStrategies(userId: number): Strategy[] {
   return rows;
 }
 
+/** Get all strategies across all users (for scripts/cron reports) */
+export function getAllStrategies(): Strategy[] {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM strategies ORDER BY id");
+  const rows: Strategy[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  stmt.free();
+  return rows;
+}
+
 export function getStrategyById(userId: number, id: number): Strategy | null {
   if (!db) throw new Error("Database not initialized");
   const r = db.exec("SELECT * FROM strategies WHERE id = ? AND user_id = ?", [id, userId]);
@@ -529,6 +539,16 @@ export function getHoldings(userId: number) {
   if (!db) throw new Error("Database not initialized");
   const stmt = db.prepare("SELECT * FROM holdings WHERE user_id = ? ORDER BY created_at DESC");
   stmt.bind([userId]);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+/** Get all holdings across all users (for cron/scripts) */
+export function getAllHoldings() {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM holdings ORDER BY user_id, created_at DESC");
   const rows: any[] = [];
   while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();

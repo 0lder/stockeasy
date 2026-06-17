@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getHoldings, addHolding, updateHolding, deleteHolding } from "../database.js";
+import { getHoldings, getAllHoldings, addHolding, updateHolding, deleteHolding } from "../database.js";
 import { queryWencai } from "../wencai.js";
 import { requireAuth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/async-handler.js";
@@ -31,7 +31,8 @@ router.delete("/api/holdings/:id", requireAuth, asyncHandler(async (req, res) =>
 }));
 
 router.get("/api/daily-summary", requireAuth, asyncHandler(async (req, res) => {
-  const holdings = getHoldings(req.user!.userId);
+  const isCron = req.user!.userId === 0;
+  const holdings = isCron ? getAllHoldings() : getHoldings(req.user!.userId);
   if (!holdings.length) { res.json({ summary: "📋 当前无持仓记录", items: [], totalPnl: 0 }); return; }
 
   const codes = holdings.map((h: any) => h.stock_code).join(",");
