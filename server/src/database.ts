@@ -628,6 +628,20 @@ export function updateAlert(id: number, updates: Partial<{ threshold_up: number;
   saveToDisk();
 }
 
+export function updateAlertTriggered(id: number, direction: "up" | "down", timestamp: string): void {
+  if (!db) throw new Error("Database not initialized");
+  const field = direction === "up" ? "last_triggered_up" : "last_triggered_down";
+  db.run(`UPDATE alerts SET ${field} = ? WHERE id = ?`, [timestamp, id]);
+  saveToDisk();
+}
+
+export function deleteAlert(id: number): boolean {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM alerts WHERE id = ?", [id]);
+  saveToDisk();
+  return true;
+}
+
 // ============================================================
 
 export function getSetting(key: string): string | null {
