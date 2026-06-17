@@ -1,3 +1,4 @@
+import { api } from "../api";
 import { JSX, useState, useEffect } from "react";
 import {
   Box, Typography, Paper, Table, TableBody, TableCell, TableContainer,
@@ -55,15 +56,14 @@ export default function DashboardPanel(): JSX.Element {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/dashboard")
-      .then(r => r.json())
+    api.get("/api/dashboard").then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(e => { setError(e.message); setLoading(false); });
   }, []);
 
   if (loading) return <Box sx={{ display: "flex", justifyContent: "center", p: 8 }}><CircularProgress /></Box>;
   if (error) return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
-  if (!data) return null;
+  if (!data) return <></>;
 
   const maxRet = Math.max(...data.strategyRank.map(s => s.avgReturn), 0.1);
   const minRet = Math.min(...data.strategyRank.map(s => s.avgReturn), -0.1);

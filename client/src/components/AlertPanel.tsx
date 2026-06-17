@@ -1,3 +1,4 @@
+import { api } from "../api";
 import { JSX, useState, useEffect } from "react";
 import { 
   Box, 
@@ -56,7 +57,7 @@ export default function AlertPanel(): JSX.Element {
   const fetchAlerts = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/alerts");
+      const res = await api.get("/api/alerts");
       setAlerts(await res.json());
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -68,7 +69,7 @@ export default function AlertPanel(): JSX.Element {
     setChecking(true);
     setCheckResult(null);
     try {
-      const res = await fetch("/api/alerts/check", { method: "POST" });
+      const res = await api.post("/api/alerts/check");
       const data = await res.json();
       setCheckResult(data);
       fetchAlerts();
@@ -78,12 +79,12 @@ export default function AlertPanel(): JSX.Element {
 
   const handleDelete = async (id: number) => {
     if (!confirm("确定删除该告警？")) return;
-    await fetch(`/api/alerts/${id}`, { method: "DELETE" });
+    await api.delete(`/api/alerts/${id}`);
     fetchAlerts();
   };
 
   const handleToggleEnabled = async (a: Alert) => {
-    await fetch(`/api/alerts/${a.id}`, {
+    await api.put(`/api/alerts/${a.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: a.enabled ? 0 : 1 }),
@@ -98,18 +99,14 @@ export default function AlertPanel(): JSX.Element {
   };
 
   const saveEdit = async (id: number) => {
-    await fetch(`/api/alerts/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ threshold_up: parseFloat(editUp) || 10, threshold_down: parseFloat(editDown) || -8 }),
-    });
+    await api.put(`/api/alerts/${id}`, { threshold_up: parseFloat(editUp) || 10, threshold_down: parseFloat(editDown) || -8 });
     setEditingId(null);
     fetchAlerts();
   };
 
   const handleImportFromWatchlist = async () => {
     try {
-      const res = await fetch("/api/alerts/from-watchlist", { method: "POST" });
+      const res = await api.post("/api/alerts/from-watchlist");
       const data = await res.json();
       if (data.created > 0) alert(`已从自选股导入 ${data.created} 条告警`);
       else alert("自选股中的股票已有告警，无新增");

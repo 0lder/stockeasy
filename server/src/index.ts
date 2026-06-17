@@ -9,6 +9,7 @@ import { requestLogger } from "./middleware/request-logger.js";
 import { errorHandler, notFound } from "./middleware/error-handler.js";
 
 // Route modules
+import authRouter from "./routes/auth.js";
 import queryRouter from "./routes/query.js";
 import strategiesRouter from "./routes/strategies.js";
 import snapshotsRouter from "./routes/snapshots.js";
@@ -39,6 +40,14 @@ if (fs.existsSync(clientDist)) {
 }
 
 // --- API routes ---
+// Auth (no requireAuth — public)
+app.use(authRouter);
+
+// Stocks search & health are public
+app.use(stocksRouter);
+app.use(healthRouter);
+
+// Protected routes (require auth via per-route middleware)
 app.use(queryRouter);
 app.use(strategiesRouter);
 app.use(snapshotsRouter);
@@ -46,16 +55,11 @@ app.use(watchlistRouter);
 app.use(alertsRouter);
 app.use(holdingsRouter);
 app.use(exportRouter);
-app.use(stocksRouter);
 app.use(diagnoseRouter);
 app.use(dashboardRouter);
-app.use(healthRouter);
 
 // --- 404 vs SPA fallback ---
-// API paths that don't match get a JSON 404
 app.use("/api", notFound);
-
-// Everything else → SPA (frontend routing)
 app.get("*", (_req, res) => {
   const indexHtml = path.resolve(clientDist, "index.html");
   if (fs.existsSync(indexHtml)) {
@@ -65,7 +69,7 @@ app.get("*", (_req, res) => {
   }
 });
 
-// --- Global error handler (must be last) ---
+// --- Global error handler ---
 app.use(errorHandler);
 
 // --- Start ---
@@ -76,6 +80,7 @@ async function start() {
     console.log(`🚀 StockEasy server running at http://localhost:${PORT}`);
     console.log(`📡 纯 Node.js 引擎, 无需 Python 依赖`);
     console.log(`📦 SQLite 查询历史已启用`);
+    console.log(`🔐 用户认证已启用`);
   });
 }
 

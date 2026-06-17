@@ -1,14 +1,12 @@
 import { Router } from "express";
 import { queryWencai } from "../wencai.js";
-import {
-  getStrategies, createStrategy, updateStrategy, deleteStrategy,
-  createSnapshot, replaceSnapshot, getSnapshots, getSnapshotStocks,
-  recordQuery,
-} from "../database.js";
+import { getStrategies, getStrategyById, createStrategy, updateStrategy, deleteStrategy, createSnapshot, replaceSnapshot, getSnapshots, getSnapshotStocks, recordQuery } from "../database.js";
+import { requireAuth } from "../middleware/auth.js";
+import { asyncHandler } from "../middleware/async-handler.js";
 
 const router = Router();
 
-// --- Helper: extract stock list from wencai response ---
+// --- Helper ---
 function parseStocks(data: any[]) {
   return data.map((r: any) => ({
     code: r.股票代码 || r.code || r.stock_code,
@@ -19,152 +17,80 @@ function parseStocks(data: any[]) {
 
 // --- CRUD ---
 
-router.get("/api/strategies", (_req, res) => {
-  try { res.json(getStrategies()); }
-  catch (e: any) { res.status(500).json({ error: "获取策略失败", detail: e.message }); }
-});
+router.get("/api/strategies", requireAuth, asyncHandler(async (req, res) => {
+  res.json(getStrategies(req.user!.userId));
+}));
 
-router.post("/api/strategies", async (req, res) => {
+router.post("/api/strategies", requireAuth, asyncHandler(async (req, res) => {
+  const { name, query_text, description, tags, group_name } = req.body;
+  if (!name || !query_text) { res.status(400).json({ error: "名称和查询条件不能为空" }); return; }
+  const userId = req.user!.userId;
+  const id = createStrategy(userId, name, query_text, description || "", tags || [], group_name || "默认");
+  let snapshot_id: number | null = null, stocks = 0;
   try {
-    const { name, query_text, description, tags, group_name } = req.body;
-    if (!name || !query_text) return res.status(400).json({ error: "名称和查询条件不能为空" });
-    const id = createStrategy(name, query_text, description || "", tags || [], group_name || "默认");
-    let snapshot_id = null, stocks = 0;
+    const result = await queryWencai(query_text, 50);
+    const list = parseStocks(result.data || []);
+    if (list.length > 0) { snapshot_id = createSnapshot(id, list); stocks = list.length; }
+  } catch { /* optional */ }
+  recordQuery(userId, query_text, stocks);
+  res.json({ success: true, id, snapshot: { id: snapshot_id, stocks } });
+}));
+
+router.put("/api/strategies/:id", requireAuth, asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "无效的 ID" }); return; }
+  const userId = req.user!.userId;
+  updateStrategy(userId, id, req.body);
+  let snapshot_id: number | null = null, stocks = 0;
+  if (req.body.query_text) {
     try {
-      const result = await queryWencai(query_text, 50);
+      const result = await queryWencai(req.body.query_text, 50);
       const list = parseStocks(result.data || []);
-      if (list.length > 0) { snapshot_id = createSnapshot(id, list); stocks = list.length; }
-    } catch (_) { /* snapshot optional */ }
-    res.json({ success: true, id, snapshot: { id: snapshot_id, stocks } });
-  } catch (e: any) { res.status(500).json({ error: "创建策略失败", detail: e.message }); }
-});
-
-router.put("/api/strategies/:id", async (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "无效的 ID" });
-    updateStrategy(id, req.body);
-    let snapshot_id = null, stocks = 0;
-    if (req.body.query_text) {
-      try {
-        const result = await queryWencai(req.body.query_text, 50);
-        const list = parseStocks(result.data || []);
-        if (list.length > 0) { snapshot_id = replaceSnapshot(id, list); stocks = list.length; }
-      } catch (_) { /* snapshot optional */ }
-    }
-    res.json({ success: true, snapshot: snapshot_id ? { id: snapshot_id, stocks } : null });
-  } catch (e: any) { res.status(500).json({ error: "更新策略失败", detail: e.message }); }
-});
-
-router.delete("/api/strategies/:id", (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "无效的 ID" });
-    deleteStrategy(id);
-    res.json({ success: true });
-  } catch (e: any) { res.status(500).json({ error: "删除策略失败", detail: e.message }); }
-});
-
-// --- Run ---
-
-router.post("/api/strategies/:id/run", async (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "无效的 ID" });
-    const strategy = getStrategies().find(s => s.id === id);
-    if (!strategy) return res.status(404).json({ error: "策略不存在" });
-    const limit = parseInt(req.body.limit as string) || 50;
-    const start = Date.now();
-    const result = await queryWencai(strategy.query_text, limit);
-    recordQuery(strategy.query_text, result.total, "success", undefined, Date.now() - start);
-    res.json({ ...result, strategy_name: strategy.name, elapsed_ms: Date.now() - start });
-  } catch (e: any) { res.status(500).json({ error: "运行策略失败", detail: e.message }); }
-});
-
-// --- Auto-snapshot (cron trigger) ---
-
-function previousPriceMap(stocks: any[]): Record<string, number> {
-  const m: Record<string, number> = {};
-  for (const s of stocks) {
-    const c = (s.stock_code || "").replace(/\.(SZ|SH)$/i, "");
-    if (s.price_at_snapshot) m[c] = s.price_at_snapshot;
+      if (list.length > 0) { snapshot_id = replaceSnapshot(id, list); stocks = list.length; }
+    } catch { /* optional */ }
   }
-  return m;
-}
+  res.json({ success: true, snapshot: snapshot_id ? { id: snapshot_id, stocks } : null });
+}));
 
-function computeSnapshotStats(prevStocks: any[], currStocks: any[], prevPriceMap: Record<string, number>): any {
-  const norm = (c: string) => (c || "").replace(/\.(SZ|SH)$/i, "");
-  const cm = new Map(currStocks.map(s => [norm(s.code), s]));
-  const changes: any[] = [];
-  for (const p of prevStocks) {
-    const c = norm(p.stock_code);
-    const cur = cm.get(c);
-    if (cur && p.price_at_snapshot && cur.price) {
-      changes.push({ ...cur, changePct: (cur.price - p.price_at_snapshot) / p.price_at_snapshot * 100 });
-    }
-  }
-  changes.sort((a, b) => b.changePct - a.changePct);
-  const up = changes.filter(c => c.changePct > 0);
-  const avgChange = changes.length > 0 ? changes.reduce((s, c) => s + c.changePct, 0) / changes.length : 0;
-  return {
-    kept_count: changes.length,
-    new_count: currStocks.filter(s => !prevStocks.some(p => norm(p.stock_code) === norm(s.code))).length,
-    removed_count: prevStocks.filter(p => !currStocks.some(s => norm(s.code) === norm(p.stock_code))).length,
-    up_count: up.length, down_count: changes.length - up.length, flat_count: 0,
-    up_ratio: changes.length > 0 ? (up.length / changes.length * 100).toFixed(1) + "%" : "-",
-    avg_change: avgChange.toFixed(2) + "%",
-    best_5: changes.slice(0, 5).map(c => ({ name: c.name, change: c.changePct.toFixed(2) + "%" })),
-    worst_5: changes.slice(-5).reverse().map(c => ({ name: c.name, change: c.changePct.toFixed(2) + "%" })),
-  };
-}
+router.delete("/api/strategies/:id", requireAuth, asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "无效的 ID" }); return; }
+  deleteStrategy(req.user!.userId, id);
+  res.json({ success: true });
+}));
 
-router.post("/api/strategies/auto-snapshot", async (_req, res) => {
-  try {
-    const strategies = getStrategies();
-    if (!strategies.length) return res.json({ success: true, snapshots: [], message: "没有需要快照的策略" });
-    const results: any[] = [];
-    for (const s of strategies) {
-      try {
-        const result = await queryWencai(s.query_text, 50);
-        const stocks = parseStocks(result.data || []);
-        if (!stocks.length) { results.push({ strategy_id: s.id, strategy_name: s.name, stocks: 0, status: "skipped" }); continue; }
-        const sid = createSnapshot(s.id, stocks);
-        const snaps = getSnapshots(s.id);
-        let stats: any = null;
-        if (snaps.length >= 2) {
-          const curDate = snaps[0].snapshot_date;
-          const prev = snaps.find((ss: any) => ss.snapshot_date !== curDate);
-          if (prev) { const ps = getSnapshotStocks(prev.id); if (ps.length) stats = computeSnapshotStats(ps, stocks, previousPriceMap(ps)); }
-        }
-        results.push({ strategy_id: s.id, strategy_name: s.name, stocks: stocks.length, status: "ok", snapshot_id: sid, stats });
-      } catch (err: any) { results.push({ strategy_id: s.id, strategy_name: s.name, status: "error", detail: err.message }); }
-    }
-    res.json({ success: true, snapshots: results });
-  } catch (e: any) { res.status(500).json({ error: "自动快照失败", detail: e.message }); }
-});
+// --- Run strategy ---
 
-// --- Snapshot sub-resources ---
+router.post("/api/strategies/:id/run", requireAuth, asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "无效的 ID" }); return; }
+  const userId = req.user!.userId;
+  const strategy = getStrategyById(userId, id);
+  if (!strategy) { res.status(404).json({ error: "策略不存在" }); return; }
+  const startTime = Date.now();
+  const result = await queryWencai(strategy.query_text, 50);
+  const elapsed = Date.now() - startTime;
+  const list = parseStocks(result.data || []);
+  let snapshot_id: number | null = null;
+  if (list.length > 0) snapshot_id = replaceSnapshot(id, list);
+  recordQuery(userId, strategy.query_text, result.total, "success", undefined, elapsed);
+  res.json({ ...result, snapshot: { id: snapshot_id, stocks: list.length } });
+}));
 
-router.post("/api/strategies/:id/snapshot", async (req, res) => {
-  try {
-    const strategyId = parseInt(req.params.id);
-    if (isNaN(strategyId)) return res.status(400).json({ error: "无效的策略 ID" });
-    const strategy = getStrategies().find(s => s.id === strategyId);
-    if (!strategy) return res.status(404).json({ error: "策略不存在" });
-    const { stocks } = req.body;
-    if (!stocks || !Array.isArray(stocks) || !stocks.length)
-      return res.status(400).json({ error: "股票列表不能为空" });
-    const sid = replaceSnapshot(strategyId, parseStocks(stocks));
-    res.json({ success: true, id: sid, stock_count: stocks.length });
-  } catch (e: any) { res.status(500).json({ error: "重新生成快照失败", detail: e.message }); }
-});
+// --- Snapshots ---
 
-router.get("/api/strategies/:id/snapshots", (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "无效的策略 ID" });
-    res.json(getSnapshots(id));
-  } catch (e: any) { res.status(500).json({ error: "获取快照失败", detail: e.message }); }
-});
+router.get("/api/strategies/:id/snapshots", requireAuth, asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "无效的 ID" }); return; }
+  const strategy = getStrategyById(req.user!.userId, id);
+  if (!strategy) { res.status(404).json({ error: "策略不存在" }); return; }
+  res.json(getSnapshots(id));
+}));
+
+router.get("/api/snapshots/:id/stocks", requireAuth, asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "无效的 ID" }); return; }
+  res.json(getSnapshotStocks(id));
+}));
 
 export default router;

@@ -1,39 +1,39 @@
 import { JSX, useState, useCallback, useEffect } from "react";
-import { 
-  Box, 
-  Container, 
-  AppBar, 
-  Toolbar, 
-  Typography, 
-  IconButton, 
-  Button, 
-  TextField, 
-  InputAdornment, 
-  Paper, 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableContainer, 
-  TableHead, 
-  TableRow, 
-  Chip, 
-  CircularProgress, 
-  Alert, 
-  Drawer, 
-  List, 
-  ListItem, 
-  ListItemText, 
-  ListItemSecondaryAction, 
-  Pagination, 
-  Badge, 
-  useTheme, 
+import {
+  Box,
+  Container,
+  AppBar,
+  Toolbar,
+  Typography,
+  IconButton,
+  Button,
+  TextField,
+  InputAdornment,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Chip,
+  CircularProgress,
+  Alert,
+  Drawer,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemSecondaryAction,
+  Pagination,
+  Badge,
+  useTheme,
   ThemeProvider,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
   Snackbar,
-  Tooltip
+  Tooltip,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import HistoryIcon from "@mui/icons-material/History";
@@ -43,12 +43,15 @@ import DownloadIcon from "@mui/icons-material/Download";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import SettingsIcon from "@mui/icons-material/Settings";
+import LogoutIcon from "@mui/icons-material/Logout";
 import Sidebar, { TabKey } from "./components/Sidebar";
 import DashboardPanel from "./components/DashboardPanel";
 import StrategyPanel from "./components/StrategyPanel";
 import WatchlistPanel from "./components/WatchlistPanel";
 import ConditionBuilder from "./components/ConditionBuilder";
 import AlertPanel from "./components/AlertPanel";
+import LoginPage from "./LoginPage";
+import { api, auth } from "./api";
 import { lightTheme, darkTheme, stockColors, darkStockColors } from "./theme";
 import { useThemeContext } from "./ThemeContext";
 
@@ -96,6 +99,18 @@ export default function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false);
   const [aiConfig, setAiConfig] = useState({ apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" });
   const [aiConfigForm, setAiConfigForm] = useState({ apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" });
+
+  // Auth state
+  const [user, setUser] = useState<any>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+
+  // Check auth on mount
+  useEffect(() => {
+    auth.me().then((u) => {
+      if (u) setUser(u);
+      setAuthChecking(false);
+    }).catch(() => setAuthChecking(false));
+  }, []);
   const [configSaving, setConfigSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState("");
 
@@ -112,7 +127,7 @@ export default function App(): JSX.Element {
     setActiveTab("search");
 
     try {
-      const res = await fetch(`/api/query?q=${encodeURIComponent(trimmed)}&limit=${limit}`);
+      const res = await api.get(`/api/query?q=${encodeURIComponent(trimmed)}&limit=${limit}`);
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || err.error || "查询失败");
@@ -129,7 +144,7 @@ export default function App(): JSX.Element {
   const fetchHistory = useCallback(async (page = 1) => {
     setHistoryLoading(true);
     try {
-      const res = await fetch(`/api/history?page=${page}&pageSize=20`);
+      const res = await api.get(`/api/history?page=${page}&pageSize=20`);
       const data = await res.json();
       setHistory(data.records || []);
       setHistoryTotal(data.total || 0);
@@ -139,13 +154,13 @@ export default function App(): JSX.Element {
   }, []);
 
   const handleDeleteHistory = async (id: number) => {
-    await fetch(`/api/history/${id}`, { method: "DELETE" });
+    await api.delete(`/api/history/${id}`);
     fetchHistory(historyPage);
   };
 
   const handleClearHistory = async () => {
     if (!confirm("确定清空所有查询历史？")) return;
-    await fetch("/api/history", { method: "DELETE" });
+    await api.delete("/api/history");
     fetchHistory(1);
   };
 
@@ -157,7 +172,7 @@ export default function App(): JSX.Element {
   // ---------- export ----------
   const exportData = async (url: string) => {
     try {
-      const res = await fetch(url);
+      const res = await api.get(url);
       if (!res.ok) {
         const err = await res.json();
         alert(err.error || "导出失败");
@@ -334,6 +349,18 @@ export default function App(): JSX.Element {
   };
 
   // ---------- render ----------
+  // Auth gate
+  if (authChecking) {
+    return (
+      <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+  if (!user) {
+    return <LoginPage onLogin={(u) => setUser(u)} />;
+  }
+
   const suggestions = ["上证指数", "北向资金流向", "涨停股", "2025年一季度净利润增长率大于50%的股票", "光伏行业龙头", "市盈率低于20的消费股"];
 
   const columns = result?.columns || (result?.data?.length ? Object.keys(result.data[0]).slice(0, 20).map(k => ({ field: k, label: k })) : []);
@@ -364,8 +391,7 @@ export default function App(): JSX.Element {
 
             <Tooltip title="AI 设置">
               <IconButton onClick={() => {
-                // 加载当前配置
-                fetch("/api/config/ai").then(r => r.json()).then(data => {
+                api.get("/api/config/ai").then(r => r.json()).then(data => {
                   setAiConfigForm({
                     apiKey: "",
                     baseUrl: data.baseUrl || "https://api.openai.com/v1",
@@ -375,6 +401,12 @@ export default function App(): JSX.Element {
                 }).catch(() => setShowSettings(true));
               }} color="inherit">
                 <SettingsIcon />
+              </IconButton>
+            </Tooltip>
+
+            <Tooltip title={user?.username}>
+              <IconButton color="inherit" onClick={() => auth.logout()}>
+                <LogoutIcon />
               </IconButton>
             </Tooltip>
             
@@ -419,24 +451,26 @@ export default function App(): JSX.Element {
                     value={query}
                     onChange={e => setQuery(e.target.value)}
                     onKeyDown={e => { if (e.key === "Enter") doSearch(query); }}
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <SearchIcon color="action" />
-                        </InputAdornment>
+                    slotProps={{
+                      input: {
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchIcon color="action" />
+                          </InputAdornment>
+                        ),
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <IconButton
+                              onClick={() => doSearch(query)}
+                              disabled={loading || !query.trim()}
+                              color="primary"
+                              sx={{ backgroundColor: "primary.main", color: "white", "&:hover": { backgroundColor: "#0077ed" } }}
+                            >
+                              {loading ? <CircularProgress size={20} color="inherit" /> : <SearchIcon />}
+                            </IconButton>
+                          </InputAdornment>
                       ),
-                      endAdornment: (
-                        <InputAdornment position="end">
-                          <IconButton
-                            onClick={() => doSearch(query)}
-                            disabled={loading || !query.trim()}
-                            color="primary"
-                            sx={{ backgroundColor: "primary.main", color: "white", "&:hover": { backgroundColor: "primary.hover" } }}
-                          >
-                            {loading ? <CircularProgress size={20} color="inherit" /> : <SearchIcon />}
-                          </IconButton>
-                        </InputAdornment>
-                      ),
+                    },
                     }}
                     sx={{
                       "& .MuiOutlinedInput-root": {
@@ -696,11 +730,13 @@ export default function App(): JSX.Element {
             anchor="right"
             open={showHistory}
             onClose={() => setShowHistory(false)}
-            PaperProps={{
-              sx: {
-                width: "400px",
-                maxWidth: "90vw",
-                boxShadow: "-4px 0 24px rgba(0, 0, 0, 0.12)",
+            slotProps={{
+              paper: {
+                sx: {
+                  width: "400px",
+                  maxWidth: "90vw",
+                  boxShadow: "-4px 0 24px rgba(0, 0, 0, 0.12)",
+                },
               },
             }}
           >
@@ -861,11 +897,7 @@ export default function App(): JSX.Element {
             onClick={async () => {
               setConfigSaving(true);
               try {
-                const res = await fetch("/api/config/ai", {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(aiConfigForm),
-                });
+                const res = await api.put("/api/config/ai", aiConfigForm);
                 if (res.ok) {
                   setConfigMsg("配置已保存 ✅");
                   setShowSettings(false);

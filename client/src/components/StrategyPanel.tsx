@@ -1,3 +1,4 @@
+import { api } from "../api";
 import { JSX, useState, useEffect } from "react";
 import { 
   Box, 
@@ -76,7 +77,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
   // Export snapshot to Excel
   const exportSnapshot = async (snapshotId: number) => {
     try {
-      const res = await fetch(`/api/export/snapshot/${snapshotId}`);
+      const res = await api.get(`/api/export/snapshot/${snapshotId}`);
       if (!res.ok) {
         const err = await res.json();
         alert(err.error || "导出失败");
@@ -97,7 +98,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
   const fetchStrategies = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/strategies");
+      const res = await api.get("/api/strategies");
       setStrategies(await res.json());
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -107,7 +108,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
 
   const fetchSnapshots = async (strategyId: number) => {
     try {
-      const res = await fetch(`/api/strategies/${strategyId}/snapshots`);
+      const res = await api.get(`/api/strategies/${strategyId}/snapshots`);
       const data = await res.json();
       setSnapshots(data);
       return data;
@@ -120,9 +121,9 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
     try {
       const body = { name: name.trim(), query_text: queryText.trim(), description: description.trim(), group_name: groupName };
       if (editingId) {
-        await fetch(`/api/strategies/${editingId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        await api.put(`/api/strategies/${editingId}`, body);
       } else {
-        await fetch("/api/strategies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        await api.post("/api/strategies", body);
       }
       setName(""); setQueryText(""); setDescription(""); setGroupName("默认"); setEditingId(null); setShowForm(false);
       fetchStrategies();
@@ -136,7 +137,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
 
   const handleDelete = async (id: number) => {
     if (!confirm("确定删除该策略？")) return;
-    await fetch(`/api/strategies/${id}`, { method: "DELETE" });
+    await api.delete(`/api/strategies/${id}`);
     if (expandedStrategy === id) { setExpandedStrategy(null); setSnapshots([]); }
     fetchStrategies();
   };
@@ -145,18 +146,14 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
   const handleSaveSnapshot = async (s: Strategy) => {
     setSavingId(s.id);
     try {
-      const queryRes = await fetch(`/api/query?q=${encodeURIComponent(s.query_text)}&limit=50`);
+      const queryRes = await api.get(`/api/query?q=${encodeURIComponent(s.query_text)}&limit=50`);
       const queryData = await queryRes.json();
       if (!queryData.data || queryData.data.length === 0) {
         alert("策略没有选出任何股票，无法生成快照");
         setSavingId(null);
         return;
       }
-      const snapRes = await fetch(`/api/strategies/${s.id}/snapshot`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stocks: queryData.data }),
-      });
+      const snapRes = await api.post(`/api/strategies/${s.id}/snapshot`, { stocks: queryData.data });
       const snapData = await snapRes.json();
       if (snapData.success) {
         // 刷新展开的快照视图
@@ -176,7 +173,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
     setDetailLoading(true);
     setSnapshotDetail(null);
     try {
-      const res = await fetch(`/api/snapshots/${snapshotId}`);
+      const res = await api.get(`/api/snapshots/${snapshotId}`);
       setSnapshotDetail(await res.json());
     } catch (e) { console.error(e); }
     setDetailLoading(false);
@@ -184,7 +181,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
 
   const handleDeleteSnapshot = async (snapshotId: number, strategyId: number) => {
     if (!confirm("确定删除该快照？")) return;
-    await fetch(`/api/snapshots/${snapshotId}`, { method: "DELETE" });
+    await api.delete(`/api/snapshots/${snapshotId}`);
     fetchSnapshots(strategyId);
     setSnapshotDetail(null);
   };
@@ -437,7 +434,7 @@ export default function StrategyPanel({ onRunStrategy }: { onRunStrategy: (query
                                       chgColor = chg > 0 ? "error.main" : chg < 0 ? "success.main" : "text.secondary";
                                     }
                                     return (
-                                      <Grid item xs={12} sm={6} md={4} key={i}>
+                                      <Grid size={{ xs: 12, sm: 6, md: 4 }} key={i}>
                                         <Card sx={{ 
                                           padding: "8px 10px", 
                                           borderRadius: "6px",

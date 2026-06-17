@@ -1,6 +1,10 @@
 /**
- * SQLite 查询历史存储 (纯 JS, 无需编译)
- * 使用 sql.js 实现，数据保存在内存 + 定时写入磁盘
+ * SQLite database layer (sql.js in-memory + disk persistence).
+ *
+ * v2 changes:
+ *  - User auth (users table, password hashing via bcryptjs)
+ *  - user_id foreign key on all data tables
+ *  - Price cache TTL (intraday only — re-fetch next day)
  */
 
 import initSqlJs, { Database as SqlJsDatabase } from "sql.js";
@@ -10,21 +14,20 @@ import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const DB_PATH = path.resolve(__dirname, "../../data/history.db");
 
 let db: SqlJsDatabase | null = null;
 
+// ============================================================
+// Init — create tables + migrate
+// ============================================================
+
 export async function initDatabase(): Promise<void> {
   const SQL = await initSqlJs();
 
-  // 确保 data 目录存在
   const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // 尝试从磁盘加载已有数据库
   if (fs.existsSync(DB_PATH)) {
     const buffer = fs.readFileSync(DB_PATH);
     db = new SQL.Database(buffer);
@@ -32,61 +35,78 @@ export async function initDatabase(): Promise<void> {
     db = new SQL.Database();
   }
 
-  // 创建表
+  // ---- Users ----
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at DATETIME DEFAULT (datetime('now', 'localtime'))
+    )
+  `);
+
+  // ---- Settings (per-user key-value) ----
+  db.run(`
+    CREATE TABLE IF NOT EXISTS settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      UNIQUE(user_id, key),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+
+  // ---- Query history ----
   db.run(`
     CREATE TABLE IF NOT EXISTS query_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
       query TEXT NOT NULL,
       result_count INTEGER DEFAULT 0,
       status TEXT DEFAULT 'success',
       error_msg TEXT,
       elapsed_ms INTEGER,
-      created_at DATETIME DEFAULT (datetime('now', 'localtime'))
+      created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
 
-  // 策略表
+  // ---- Strategies ----
   db.run(`
     CREATE TABLE IF NOT EXISTS strategies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
       name TEXT NOT NULL,
       description TEXT DEFAULT '',
       query_text TEXT NOT NULL,
       tags TEXT DEFAULT '[]',
       group_name TEXT DEFAULT '默认',
       created_at DATETIME DEFAULT (datetime('now', 'localtime')),
-      updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+      updated_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
 
-  // 自选股表
+  // ---- Watchlist ----
   db.run(`
     CREATE TABLE IF NOT EXISTS watchlist (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
       stock_code TEXT NOT NULL,
       stock_name TEXT NOT NULL,
       note TEXT DEFAULT '',
       group_name TEXT DEFAULT '默认',
-      added_at DATETIME DEFAULT (datetime('now', 'localtime'))
+      added_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      price_at_add REAL,
+      alert_up REAL,
+      alert_down REAL,
+      alert_triggered INTEGER DEFAULT 0,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
 
-  // 迁移：添加告警相关列（兼容已有数据库）
-  const watchlistCols = db.exec("PRAGMA table_info(watchlist)").flatMap((r: any) => r.values.map((v: any) => v[1]));
-  if (!watchlistCols.includes("price_at_add")) {
-    db.run("ALTER TABLE watchlist ADD COLUMN price_at_add REAL");
-  }
-  if (!watchlistCols.includes("alert_up")) {
-    db.run("ALTER TABLE watchlist ADD COLUMN alert_up REAL");
-  }
-  if (!watchlistCols.includes("alert_down")) {
-    db.run("ALTER TABLE watchlist ADD COLUMN alert_down REAL");
-  }
-  if (!watchlistCols.includes("alert_triggered")) {
-    db.run("ALTER TABLE watchlist ADD COLUMN alert_triggered INTEGER DEFAULT 0");
-  }
-
-  // 策略快照表
+  // ---- Strategy snapshots ----
   db.run(`
     CREATE TABLE IF NOT EXISTS strategy_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,7 +118,7 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
-  // 快照股票表
+  // ---- Snapshot stocks ----
   db.run(`
     CREATE TABLE IF NOT EXISTS snapshot_stocks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,23 +130,26 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
-    // 持仓表
-    db.run(`
-      CREATE TABLE IF NOT EXISTS holdings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        stock_code TEXT NOT NULL,
-        stock_name TEXT NOT NULL,
-        cost_price REAL NOT NULL,
-        quantity INTEGER DEFAULT 1,
-        note TEXT DEFAULT '',
-        created_at DATETIME DEFAULT (datetime('now', 'localtime'))
-      )
-    `);
+  // ---- Holdings ----
+  db.run(`
+    CREATE TABLE IF NOT EXISTS holdings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      cost_price REAL NOT NULL,
+      quantity INTEGER DEFAULT 1,
+      note TEXT DEFAULT '',
+      created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
 
-    // 告警设置表
+  // ---- Alerts ----
   db.run(`
     CREATE TABLE IF NOT EXISTS alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
       stock_code TEXT NOT NULL,
       stock_name TEXT NOT NULL,
       threshold_up REAL DEFAULT 10.0,
@@ -135,11 +158,12 @@ export async function initDatabase(): Promise<void> {
       last_triggered_up REAL,
       last_triggered_down REAL,
       created_at DATETIME DEFAULT (datetime('now', 'localtime')),
-      updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+      updated_at DATETIME DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
 
-  // 股价缓存表（日内复用，减少新浪API请求）
+  // ---- Price cache ----
   db.run(`
     CREATE TABLE IF NOT EXISTS stock_prices (
       stock_code TEXT PRIMARY KEY,
@@ -150,12 +174,20 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
-  // 保存到磁盘
-  saveToDisk();
+  // ---- Migration: add user_id columns to existing tables ----
+  migrateAddColumn("query_history", "user_id", "INTEGER");
+  migrateAddColumn("strategies", "user_id", "INTEGER");
+  migrateAddColumn("watchlist", "user_id", "INTEGER");
+  migrateAddColumn("holdings", "user_id", "INTEGER");
+  migrateAddColumn("alerts", "user_id", "INTEGER");
 
-  // 定时保存 (每30秒)
+  // ---- Migration: add missing columns on watchlist ----
+  for (const col of ["price_at_add", "alert_up", "alert_down", "alert_triggered"]) {
+    migrateAddColumn("watchlist", col, "price_at_add" === col || "alert_up" === col || "alert_down" === col ? "REAL" : "INTEGER DEFAULT 0");
+  }
+
+  saveToDisk();
   setInterval(saveToDisk, 30000);
-  // 进程退出时保存
   process.on("exit", saveToDisk);
   process.on("SIGINT", () => { saveToDisk(); process.exit(); });
   process.on("SIGTERM", () => { saveToDisk(); process.exit(); });
@@ -163,191 +195,148 @@ export async function initDatabase(): Promise<void> {
   console.log(`📦 SQLite database ready at ${DB_PATH}`);
 }
 
+// ============================================================
+// Migration helper
+// ============================================================
+
+function migrateAddColumn(table: string, col: string, type: string): void {
+  if (!db) return;
+  try {
+    const existing = db.exec(`PRAGMA table_info(${table})`);
+    const cols = existing.flatMap((r: any) => r.values.map((v: any) => v[1]));
+    if (!cols.includes(col)) {
+      db.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+      console.log(`[db migration] Added ${table}.${col}`);
+    }
+  } catch (e: any) {
+    console.error(`[db migration] Failed for ${table}.${col}: ${e.message}`);
+  }
+}
+
+// ============================================================
+// Disk persistence
+// ============================================================
+
 function saveToDisk(): void {
   if (!db) return;
   try {
-    const data = db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(DB_PATH, buffer);
+    fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
   } catch (err) {
     console.error("[db] Failed to save database:", err);
   }
 }
 
 // ============================================================
-// Query History
+// Users
 // ============================================================
 
-export interface QueryRecord {
+export interface User {
   id: number;
-  query: string;
-  result_count: number;
-  status: string;
-  error_msg: string | null;
-  elapsed_ms: number | null;
+  username: string;
+  password_hash: string;
   created_at: string;
 }
 
-export function recordQuery(
-  query: string,
-  resultCount: number,
-  status: string = "success",
-  errorMsg?: string,
-  elapsedMs?: number
-): number {
+/** Return the last inserted rowid from the most recent INSERT on this connection */
+function getLastInsertId(): number {
   if (!db) throw new Error("Database not initialized");
+  const r = db.exec("SELECT last_insert_rowid() AS id");
+  if (!r.length || !r[0].values.length) return 0;
+  const id = r[0].values[0][0];
+  return typeof id === "number" ? id : Number(id) || 0;
+}
 
-  const stmt = db.prepare(`
-    INSERT INTO query_history (query, result_count, status, error_msg, elapsed_ms)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  stmt.run([query, resultCount, status, errorMsg || null, elapsedMs || null]);
-  stmt.free();
-
-  const id = (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
+export function createUser(username: string, passwordHash: string): number {
+  if (!db) throw new Error("Database not initialized");
+  db.run("INSERT INTO users (username, password_hash) VALUES (?, ?)", [username, passwordHash]);
+  const id = getLastInsertId();
+  saveToDisk();
   return id;
 }
 
-export function getQueryHistory(
-  page: number = 1,
-  pageSize: number = 20
-): { records: QueryRecord[]; total: number; page: number; pageSize: number } {
+export function getUserByUsername(username: string): User | null {
   if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM users WHERE username = ?");
+  stmt.bind([username]);
+  if (!stmt.step()) { stmt.free(); return null; }
+  const row = stmt.getAsObject() as any;
+  stmt.free();
+  return { id: row.id as number, username: row.username as string, password_hash: row.password_hash as string, created_at: row.created_at as string };
+}
 
-  // 总数
-  const countResult = db.exec("SELECT COUNT(*) as total FROM query_history");
-  const total = countResult[0]?.values[0][0] as number || 0;
+export function getUserById(id: number): User | null {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM users WHERE id = ?");
+  stmt.bind([id]);
+  if (!stmt.step()) { stmt.free(); return null; }
+  const row = stmt.getAsObject() as any;
+  stmt.free();
+  return { id: row.id as number, username: row.username as string, password_hash: row.password_hash as string, created_at: row.created_at as string };
+}
 
-  // 分页查询 (倒序，最新的在前)
+// ============================================================
+// Settings (per-user key-value)
+// ============================================================
+
+export function getSetting(userId: number, key: string): string | null {
+  if (!db) throw new Error("Database not initialized");
+  const r = db.exec("SELECT value FROM settings WHERE user_id = ? AND key = ?", [userId, key]);
+  if (r.length === 0 || r[0].values.length === 0) return null;
+  return r[0].values[0][0] as string;
+}
+
+export function setSetting(userId: number, key: string, value: string): void {
+  if (!db) throw new Error("Database not initialized");
+  db.run(
+    "INSERT INTO settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = ?",
+    [userId, key, value, value]
+  );
+  saveToDisk();
+}
+
+// ============================================================
+// Query History
+// ============================================================
+
+export function recordQuery(userId: number, query: string, resultCount: number, status = "success", errorMsg?: string, elapsedMs?: number): number {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("INSERT INTO query_history (user_id, query, result_count, status, error_msg, elapsed_ms) VALUES (?, ?, ?, ?, ?, ?)");
+  stmt.run([userId, query, resultCount, status, errorMsg || null, elapsedMs || null]);
+  stmt.free();
+  return getLastInsertId();
+}
+
+export function getQueryHistory(userId: number, page = 1, pageSize = 20) {
+  if (!db) throw new Error("Database not initialized");
   const offset = (page - 1) * pageSize;
-  const stmt = db.prepare(`
-    SELECT id, query, result_count, status, error_msg, elapsed_ms, created_at
-    FROM query_history
-    ORDER BY id DESC
-    LIMIT ? OFFSET ?
-  `);
-  stmt.bind([pageSize, offset]);
-
-  const records: QueryRecord[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as any;
-    records.push({
-      id: row.id,
-      query: row.query,
-      result_count: row.result_count,
-      status: row.status,
-      error_msg: row.error_msg,
-      elapsed_ms: row.elapsed_ms,
-      created_at: row.created_at,
-    });
-  }
+  const stmt = db.prepare("SELECT * FROM query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?");
+  stmt.bind([userId, pageSize, offset]);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
-
-  return { records, total, page, pageSize };
+  const total = (db.exec("SELECT COUNT(*) FROM query_history WHERE user_id = ?", [userId])[0]?.values[0][0] || 0) as number;
+  return { items: rows, total, page, pageSize };
 }
 
-export function deleteQueryHistory(id: number): boolean {
+export function deleteQueryHistory(userId: number, id: number): void {
   if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM query_history WHERE id = ?", [id]);
+  db.run("DELETE FROM query_history WHERE id = ? AND user_id = ?", [id, userId]);
   saveToDisk();
-  return true;
 }
 
-export function clearQueryHistory(): void {
+export function clearQueryHistory(userId: number): void {
   if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM query_history");
+  db.run("DELETE FROM query_history WHERE user_id = ?", [userId]);
   saveToDisk();
 }
 
 // ============================================================
-// Holdings 持仓管理
-// ============================================================
-
-export function addHolding(stockCode: string, stockName: string, costPrice: number, quantity: number = 1, note: string = ""): { success: boolean; id?: number; error?: string } {
-  if (!db) return { success: false, error: "Database not initialized" };
-  try {
-    db.run(
-      "INSERT INTO holdings (stock_code, stock_name, cost_price, quantity, note) VALUES (?, ?, ?, ?, ?)",
-      [stockCode, stockName, costPrice, quantity, note]
-    );
-    saveToDisk();
-    const result = db.exec("SELECT last_insert_rowid()");
-    const id = result[0]?.values[0][0] as number || 0;
-    return { success: true, id };
-  } catch (e: any) {
-    return { success: false, error: e.message };
-  }
-}
-
-export function getHoldings(): any[] {
-  if (!db) return [];
-  const result = db.exec("SELECT * FROM holdings ORDER BY created_at DESC");
-  if (!result.length) return [];
-  const cols = result[0].columns;
-  return result[0].values.map((row: any) => {
-    const obj: any = {};
-    cols.forEach((c, i) => { obj[c] = row[i]; });
-    return obj;
-  });
-}
-
-export function updateHolding(id: number, fields: Record<string, any>): boolean {
-  if (!db) throw new Error("Database not initialized");
-  const setClauses: string[] = [];
-  const params: any[] = [];
-  const allowed = ["stock_code", "stock_name", "cost_price", "quantity", "note"];
-  for (const key of allowed) {
-    if (fields[key] !== undefined) {
-      setClauses.push(`${key} = ?`);
-      params.push(fields[key]);
-    }
-  }
-  if (!setClauses.length) return false;
-  params.push(id);
-  db.run(`UPDATE holdings SET ${setClauses.join(", ")} WHERE id = ?`, params);
-  saveToDisk();
-  return true;
-}
-
-export function deleteHolding(id: number): boolean {
-  if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM holdings WHERE id = ?", [id]);
-  saveToDisk();
-  return true;
-}
-
-export function getLatestQuery(): QueryRecord | null {
-  if (!db) return null;
-  const stmt = db.prepare(`
-    SELECT id, query, result_count, status, error_msg, elapsed_ms, created_at
-    FROM query_history
-    ORDER BY id DESC
-    LIMIT 1
-  `);
-  stmt.bind([]);
-  let record: QueryRecord | null = null;
-  if (stmt.step()) {
-    const row = stmt.getAsObject() as any;
-    record = {
-      id: row.id,
-      query: row.query,
-      result_count: row.result_count,
-      status: row.status,
-      error_msg: row.error_msg,
-      elapsed_ms: row.elapsed_ms,
-      created_at: row.created_at,
-    };
-  }
-  stmt.free();
-  return record;
-}
-
-// ============================================================
-// Strategies (策略管理)
+// Strategies
 // ============================================================
 
 export interface Strategy {
   id: number;
+  user_id: number;
   name: string;
   description: string;
   query_text: string;
@@ -357,350 +346,321 @@ export interface Strategy {
   updated_at: string;
 }
 
-export function createStrategy(
-  name: string,
-  queryText: string,
-  description: string = "",
-  tags: string[] = [],
-  groupName: string = "默认"
-): number {
+export function createStrategy(userId: number, name: string, queryText: string, description = "", tags: string[] = [], groupName = "默认"): number {
   if (!db) throw new Error("Database not initialized");
-  const stmt = db.prepare(`
-    INSERT INTO strategies (name, description, query_text, tags, group_name)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  stmt.run([name, description, queryText, JSON.stringify(tags), groupName]);
+  const stmt = db.prepare("INSERT INTO strategies (user_id, name, description, query_text, tags, group_name) VALUES (?, ?, ?, ?, ?, ?)");
+  stmt.run([userId, name, description, queryText, JSON.stringify(tags), groupName]);
   stmt.free();
-  return (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
+  const id = getLastInsertId();
+  saveToDisk();
+  return id;
 }
 
-export function getStrategies(): Strategy[] {
+export function getStrategies(userId: number): Strategy[] {
   if (!db) throw new Error("Database not initialized");
-  const stmt = db.prepare("SELECT * FROM strategies ORDER BY updated_at DESC");
-  stmt.bind([]);
+  const stmt = db.prepare("SELECT * FROM strategies WHERE user_id = ? ORDER BY updated_at DESC");
+  stmt.bind([userId]);
   const rows: Strategy[] = [];
   while (stmt.step()) rows.push(stmt.getAsObject() as any);
   stmt.free();
   return rows;
 }
 
-export function updateStrategy(id: number, data: { name?: string; description?: string; query_text?: string; tags?: string[]; group_name?: string }): boolean {
+export function getStrategyById(userId: number, id: number): Strategy | null {
   if (!db) throw new Error("Database not initialized");
-  const fields: string[] = [];
-  const values: any[] = [];
+  const r = db.exec("SELECT * FROM strategies WHERE id = ? AND user_id = ?", [id, userId]);
+  if (r.length === 0 || r[0].values.length === 0) return null;
+  const v = r[0].values[0];
+  return { id: v[0], user_id: v[1], name: v[2], description: v[3], query_text: v[4], tags: v[5], group_name: v[6], created_at: v[7], updated_at: v[8] } as Strategy;
+}
+
+export function updateStrategy(userId: number, id: number, data: { name?: string; description?: string; query_text?: string; tags?: string[]; group_name?: string }): boolean {
+  if (!db) throw new Error("Database not initialized");
+  const fields: string[] = []; const values: any[] = [];
   if (data.name !== undefined) { fields.push("name = ?"); values.push(data.name); }
   if (data.description !== undefined) { fields.push("description = ?"); values.push(data.description); }
   if (data.query_text !== undefined) { fields.push("query_text = ?"); values.push(data.query_text); }
   if (data.tags !== undefined) { fields.push("tags = ?"); values.push(JSON.stringify(data.tags)); }
   if (data.group_name !== undefined) { fields.push("group_name = ?"); values.push(data.group_name); }
   fields.push("updated_at = datetime('now', 'localtime')");
-  values.push(id);
-  db.run(`UPDATE strategies SET ${fields.join(", ")} WHERE id = ?`, values);
+  values.push(id, userId);
+  db.run(`UPDATE strategies SET ${fields.join(", ")} WHERE id = ? AND user_id = ?`, values);
   saveToDisk();
   return true;
 }
 
-export function deleteStrategy(id: number): boolean {
+export function deleteStrategy(userId: number, id: number): boolean {
   if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM strategies WHERE id = ?", [id]);
+  // Also delete snapshots and snapshot_stocks
+  db.run("DELETE FROM snapshot_stocks WHERE snapshot_id IN (SELECT id FROM strategy_snapshots WHERE strategy_id = ?)", [id]);
+  db.run("DELETE FROM strategy_snapshots WHERE strategy_id = ?", [id]);
+  db.run("DELETE FROM strategies WHERE id = ? AND user_id = ?", [id, userId]);
   saveToDisk();
   return true;
 }
 
 // ============================================================
-// Watchlist (自选股)
+// Snapshots
 // ============================================================
 
-export interface WatchItem {
-  id: number;
-  stock_code: string;
-  stock_name: string;
-  note: string;
-  group_name: string;
-  added_at: string;
-  price_at_add: number | null;
-  alert_up: number | null;
-  alert_down: number | null;
-  alert_triggered: number;
-}
-
-export function addToWatchlist(stockCode: string, stockName: string, note: string = "", groupName: string = "默认", priceAtAdd?: number): number {
+export function createSnapshot(strategyId: number, stocks: { code: string; name: string; price: number }[]): number {
   if (!db) throw new Error("Database not initialized");
-  // 查重
-  const existing = db.exec("SELECT id FROM watchlist WHERE stock_code = ?", [stockCode]);
-  if (existing.length > 0 && existing[0].values.length > 0) {
-    return existing[0].values[0][0] as number;
-  }
-  const stmt = db.prepare("INSERT INTO watchlist (stock_code, stock_name, note, group_name, price_at_add) VALUES (?, ?, ?, ?, ?)");
-  stmt.run([stockCode, stockName, note, groupName, priceAtAdd || null]);
-  stmt.free();
-  saveToDisk();
-  return (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
-}
-
-export function getWatchlist(): WatchItem[] {
-  if (!db) throw new Error("Database not initialized");
-  const stmt = db.prepare("SELECT * FROM watchlist ORDER BY group_name, added_at DESC");
-  stmt.bind([]);
-  const rows: WatchItem[] = [];
-  while (stmt.step()) rows.push(stmt.getAsObject() as any);
-  stmt.free();
-  return rows;
-}
-
-export function updateWatchItem(id: number, data: { note?: string; group_name?: string }): boolean {
-  if (!db) throw new Error("Database not initialized");
-  const fields: string[] = [];
-  const values: any[] = [];
-  if (data.note !== undefined) { fields.push("note = ?"); values.push(data.note); }
-  if (data.group_name !== undefined) { fields.push("group_name = ?"); values.push(data.group_name); }
-  if (fields.length === 0) return true;
-  values.push(id);
-  db.run(`UPDATE watchlist SET ${fields.join(", ")} WHERE id = ?`, values);
-  saveToDisk();
-  return true;
-}
-
-export function removeFromWatchlist(id: number): boolean {
-  if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM watchlist WHERE id = ?", [id]);
-  saveToDisk();
-  return true;
-}
-
-export function getWatchlistGroups(): string[] {
-  if (!db) throw new Error("Database not initialized");
-  const result = db.exec("SELECT DISTINCT group_name FROM watchlist ORDER BY group_name");
-  return result[0]?.values.map((v: any) => v[0]) || [];
-}
-
-// ============================================================
-// Strategy Snapshots (策略快照)
-// ============================================================
-
-export interface StrategySnapshot {
-  id: number;
-  strategy_id: number;
-  snapshot_date: string;
-  stock_count: number;
-  created_at: string;
-}
-
-export interface SnapshotStock {
-  id: number;
-  snapshot_id: number;
-  stock_code: string;
-  stock_name: string;
-  price_at_snapshot: number | null;
-}
-
-// 创建快照
-export function createSnapshot(strategyId: number, stocks: { code: string; name: string; price?: number }[]): number {
-  if (!db) throw new Error("Database not initialized");
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
-  db.run("INSERT INTO strategy_snapshots (strategy_id, snapshot_date, stock_count) VALUES (?, ?, ?)",
-    [strategyId, dateStr, stocks.length]);
-  const snapshotId = (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
-
+  const today = new Date().toISOString().slice(0, 10);
+  db.run("INSERT INTO strategy_snapshots (strategy_id, snapshot_date, stock_count) VALUES (?, ?, ?)", [strategyId, today, stocks.length]);
+  const snapId = getLastInsertId();
   const stmt = db.prepare("INSERT INTO snapshot_stocks (snapshot_id, stock_code, stock_name, price_at_snapshot) VALUES (?, ?, ?, ?)");
-  for (const s of stocks) {
-    stmt.run([snapshotId, s.code, s.name, s.price || null]);
-  }
+  for (const s of stocks) stmt.run([snapId, s.code, s.name, s.price || null]);
   stmt.free();
   saveToDisk();
-  return snapshotId;
+  return snapId;
 }
 
-// 替换策略快照：删除旧快照 → 创建新快照（每个策略只保留一组）
-export function replaceSnapshot(strategyId: number, stocks: { code: string; name: string; price?: number }[]): number {
+export function replaceSnapshot(strategyId: number, stocks: { code: string; name: string; price: number }[]): number {
   if (!db) throw new Error("Database not initialized");
-  // 删除该策略所有旧快照（含关联的 snapshot_stocks）
-  const oldSnaps = getSnapshots(strategyId);
-  for (const snap of oldSnaps) {
-    db!.run("DELETE FROM snapshot_stocks WHERE snapshot_id = ?", [snap.id]);
-    db!.run("DELETE FROM strategy_snapshots WHERE id = ?", [snap.id]);
-  }
-  // 创建新快照
+  const today = new Date().toISOString().slice(0, 10);
+  // Delete today's snapshot if exists
+  db.run("DELETE FROM snapshot_stocks WHERE snapshot_id IN (SELECT id FROM strategy_snapshots WHERE strategy_id = ? AND snapshot_date = ?)", [strategyId, today]);
+  db.run("DELETE FROM strategy_snapshots WHERE strategy_id = ? AND snapshot_date = ?", [strategyId, today]);
   return createSnapshot(strategyId, stocks);
 }
 
-// 获取策略的所有快照
-export function getSnapshots(strategyId: number): StrategySnapshot[] {
+export function getSnapshots(strategyId: number) {
   if (!db) throw new Error("Database not initialized");
-  const stmt = db.prepare("SELECT * FROM strategy_snapshots WHERE strategy_id = ? ORDER BY snapshot_date DESC, created_at DESC");
+  const stmt = db.prepare("SELECT * FROM strategy_snapshots WHERE strategy_id = ? ORDER BY snapshot_date DESC");
   stmt.bind([strategyId]);
-  const rows: StrategySnapshot[] = [];
-  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
   return rows;
 }
 
-// 获取快照中的股票列表
-export function getSnapshotStocks(snapshotId: number): SnapshotStock[] {
-  if (!db) throw new Error("Database not initialized");
-  const stmt = db.prepare("SELECT * FROM snapshot_stocks WHERE snapshot_id = ?");
-  stmt.bind([snapshotId]);
-  const rows: SnapshotStock[] = [];
-  while (stmt.step()) rows.push(stmt.getAsObject() as any);
-  stmt.free();
-  return rows;
-}
-
-// 删除快照
-export function deleteSnapshot(snapshotId: number): boolean {
-  if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM snapshot_stocks WHERE snapshot_id = ?", [snapshotId]);
-  db.run("DELETE FROM strategy_snapshots WHERE id = ?", [snapshotId]);
-  saveToDisk();
-  return true;
-}
-
-// 获取所有快照（含策略名）
-export function getAllSnapshots(): { id: number; strategy_id: number; strategy_name: string; snapshot_date: string; stock_count: number; created_at: string }[] {
+export function getAllSnapshots(userId: number) {
   if (!db) throw new Error("Database not initialized");
   const stmt = db.prepare(`
     SELECT ss.*, s.name as strategy_name
     FROM strategy_snapshots ss
     JOIN strategies s ON s.id = ss.strategy_id
-    ORDER BY ss.created_at DESC
+    WHERE s.user_id = ?
+    ORDER BY ss.snapshot_date DESC
   `);
-  stmt.bind([]);
+  stmt.bind([userId]);
   const rows: any[] = [];
-  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
   return rows;
 }
 
-
-// ============================================================
-// Alerts (涨跌告警)
-// ============================================================
-
-export interface Alert {
-  id: number;
-  stock_code: string;
-  stock_name: string;
-  threshold_up: number;
-  threshold_down: number;
-  enabled: number;
-  last_triggered_up: number | null;
-  last_triggered_down: number | null;
-  created_at: string;
-  updated_at: string;
-}
-
-// 获取所有告警
-export function getAlerts(): Alert[] {
+export function getSnapshotStocks(snapshotId: number) {
   if (!db) throw new Error("Database not initialized");
-  const stmt = db.prepare("SELECT * FROM alerts ORDER BY stock_code");
-  stmt.bind([]);
-  const rows: Alert[] = [];
-  while (stmt.step()) rows.push(stmt.getAsObject() as any);
+  const stmt = db.prepare("SELECT * FROM snapshot_stocks WHERE snapshot_id = ?");
+  stmt.bind([snapshotId]);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
   return rows;
 }
 
-// 创建告警
-export function createAlert(stockCode: string, stockName: string, thresholdUp?: number, thresholdDown?: number): number {
+export function deleteSnapshot(snapshotId: number): void {
   if (!db) throw new Error("Database not initialized");
-  db.run(
-    "INSERT INTO alerts (stock_code, stock_name, threshold_up, threshold_down) VALUES (?, ?, ?, ?)",
-    [stockCode, stockName, thresholdUp ?? 10.0, thresholdDown ?? -8.0]
-  );
-  const id = (db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0]) as number;
+  db.run("DELETE FROM snapshot_stocks WHERE snapshot_id = ?", [snapshotId]);
+  db.run("DELETE FROM strategy_snapshots WHERE id = ?", [snapshotId]);
+  saveToDisk();
+}
+
+// ============================================================
+// Watchlist
+// ============================================================
+
+export function addToWatchlist(userId: number, stockCode: string, stockName: string, note = "", groupName = "默认", priceAtAdd?: number): number {
+  if (!db) throw new Error("Database not initialized");
+  const existing = db.exec("SELECT id FROM watchlist WHERE stock_code = ? AND user_id = ?", [stockCode, userId]);
+  if (existing.length > 0 && existing[0].values.length > 0) return existing[0].values[0][0] as number;
+  db.run("INSERT INTO watchlist (user_id, stock_code, stock_name, note, group_name, price_at_add) VALUES (?, ?, ?, ?, ?, ?)", [userId, stockCode, stockName, note, groupName, priceAtAdd || null]);
+  const id = getLastInsertId();
   saveToDisk();
   return id;
 }
 
-// 更新告警
-export function updateAlert(id: number, updates: Partial<{ threshold_up: number; threshold_down: number; enabled: number }>): void {
+export function getWatchlist(userId: number) {
   if (!db) throw new Error("Database not initialized");
-  const fields: string[] = [];
+  const stmt = db.prepare("SELECT * FROM watchlist WHERE user_id = ? ORDER BY added_at DESC");
+  stmt.bind([userId]);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+export function getWatchlistGroups(userId: number): string[] {
+  if (!db) throw new Error("Database not initialized");
+  const r = db.exec("SELECT DISTINCT group_name FROM watchlist WHERE user_id = ?", [userId]);
+  return r.flatMap(row => row.values.map(v => v[0] as string));
+}
+
+export function updateWatchItem(userId: number, id: number, data: Record<string, any>): void {
+  if (!db) throw new Error("Database not initialized");
+  const allowed = ["stock_name", "note", "group_name", "price_at_add", "alert_up", "alert_down", "alert_triggered"];
   const values: any[] = [];
-  if (updates.threshold_up !== undefined) { fields.push("threshold_up = ?"); values.push(updates.threshold_up); }
-  if (updates.threshold_down !== undefined) { fields.push("threshold_down = ?"); values.push(updates.threshold_down); }
-  if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled); }
-  if (fields.length === 0) return;
-  fields.push("updated_at = datetime('now', 'localtime')");
-  values.push(id);
-  db.run(`UPDATE alerts SET ${fields.join(", ")} WHERE id = ?`, values);
-  saveToDisk();
+  const setClauses: string[] = [];
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      setClauses.push(`${key} = ?`);
+      values.push(data[key]);
+    }
+  }
+  if (setClauses.length) {
+    values.push(id, userId);
+    db.run(`UPDATE watchlist SET ${setClauses.join(", ")} WHERE id = ? AND user_id = ?`, values);
+    saveToDisk();
+  }
 }
 
-export function updateAlertTriggered(id: number, direction: "up" | "down", timestamp: string): void {
+export function removeFromWatchlist(userId: number, id: number): void {
   if (!db) throw new Error("Database not initialized");
-  const field = direction === "up" ? "last_triggered_up" : "last_triggered_down";
-  db.run(`UPDATE alerts SET ${field} = ? WHERE id = ?`, [timestamp, id]);
+  db.run("DELETE FROM watchlist WHERE id = ? AND user_id = ?", [id, userId]);
   saveToDisk();
-}
-
-export function deleteAlert(id: number): boolean {
-  if (!db) throw new Error("Database not initialized");
-  db.run("DELETE FROM alerts WHERE id = ?", [id]);
-  saveToDisk();
-  return true;
 }
 
 // ============================================================
+// Holdings
+// ============================================================
 
-export function getSetting(key: string): string | null {
+export function getHoldings(userId: number) {
   if (!db) throw new Error("Database not initialized");
-  try { db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"); } catch { /* ok */ }
-  const stmt = db.prepare("SELECT value FROM settings WHERE key = ?");
-  stmt.bind([key]);
-  if (stmt.step()) {
-    const val = stmt.getAsObject() as { value: string };
-    stmt.free();
-    return val.value;
-  }
+  const stmt = db.prepare("SELECT * FROM holdings WHERE user_id = ? ORDER BY created_at DESC");
+  stmt.bind([userId]);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
-  return null;
+  return rows;
 }
 
-export function setSetting(key: string, value: string): void {
+export function addHolding(userId: number, stockCode: string, stockName: string, costPrice: number, quantity = 1, note = "") {
   if (!db) throw new Error("Database not initialized");
-  db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
-  db.run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, value]);
+  db.run("INSERT INTO holdings (user_id, stock_code, stock_name, cost_price, quantity, note) VALUES (?, ?, ?, ?, ?, ?)", [userId, stockCode, stockName, costPrice, quantity, note]);
+  const id = getLastInsertId();
   saveToDisk();
+  return { id };
 }
-export function deleteSetting(key: string): void {
+
+export function updateHolding(userId: number, id: number, data: Record<string, any>): void {
   if (!db) throw new Error("Database not initialized");
-  db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
-  db.run("DELETE FROM settings WHERE key = ?", [key]);
+  const allowed = ["stock_name", "cost_price", "quantity", "note"];
+  const values: any[] = [];
+  const setClauses: string[] = [];
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      setClauses.push(`${key} = ?`);
+      values.push(data[key]);
+    }
+  }
+  if (setClauses.length) {
+    values.push(id, userId);
+    db.run(`UPDATE holdings SET ${setClauses.join(", ")} WHERE id = ? AND user_id = ?`, values);
+    saveToDisk();
+  }
+}
+
+export function deleteHolding(userId: number, id: number): void {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM holdings WHERE id = ? AND user_id = ?", [id, userId]);
   saveToDisk();
 }
 
-// ── 股价缓存 ──
-export function getCachedPrices(codes: string[]): Map<string, {current: number; yest: number}> {
+// ============================================================
+// Alerts
+// ============================================================
+
+export function getAlerts(userId: number) {
   if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM alerts WHERE user_id = ? ORDER BY created_at DESC");
+  stmt.bind([userId]);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+/** Get all alerts across all users (for cron background checks) */
+export function getAllAlerts() {
+  if (!db) throw new Error("Database not initialized");
+  const stmt = db.prepare("SELECT * FROM alerts ORDER BY user_id, created_at DESC");
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+export function createAlert(userId: number, stockCode: string, stockName: string, thresholdUp?: number, thresholdDown?: number): number {
+  if (!db) throw new Error("Database not initialized");
+  db.run("INSERT INTO alerts (user_id, stock_code, stock_name, threshold_up, threshold_down) VALUES (?, ?, ?, ?, ?)", [userId, stockCode, stockName, thresholdUp ?? 10, thresholdDown ?? -8]);
+  saveToDisk();
+  return getLastInsertId();
+}
+
+export function updateAlert(userId: number, id: number, data: Record<string, any>): void {
+  if (!db) throw new Error("Database not initialized");
+  const allowed = ["threshold_up", "threshold_down", "enabled"];
+  const values: any[] = [];
+  const setClauses: string[] = [];
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      setClauses.push(`${key} = ?`);
+      values.push(data[key]);
+    }
+  }
+  if (setClauses.length) {
+    setClauses.push("updated_at = datetime('now', 'localtime')");
+    values.push(id, userId);
+    db.run(`UPDATE alerts SET ${setClauses.join(", ")} WHERE id = ? AND user_id = ?`, values);
+    saveToDisk();
+  }
+}
+
+export function deleteAlert(userId: number, id: number): void {
+  if (!db) throw new Error("Database not initialized");
+  db.run("DELETE FROM alerts WHERE id = ? AND user_id = ?", [id, userId]);
+  saveToDisk();
+}
+
+export function updateAlertTriggered(userId: number, id: number, direction: "up" | "down", timestamp: string): void {
+  if (!db) throw new Error("Database not initialized");
+  const col = direction === "up" ? "last_triggered_up" : "last_triggered_down";
+  db.run(`UPDATE alerts SET ${col} = ? WHERE id = ? AND user_id = ?`, [timestamp, id, userId]);
+  saveToDisk();
+}
+
+// ============================================================
+// Price Cache (with TTL — same-day only)
+// ============================================================
+
+export function getCachedPrices(codes: string[]): Map<string, { current: number; yest: number }> {
+  if (!db) return new Map();
+  const result = new Map<string, { current: number; yest: number }>();
+  if (!codes.length) return result;
+
   const today = new Date().toISOString().slice(0, 10);
-  const result = new Map<string, {current: number; yest: number}>();
+  const stmt = db.prepare("SELECT stock_code, current_price, yesterday_close, updated_at FROM stock_prices WHERE stock_code = ?");
   for (const code of codes) {
-    const stmt = db.prepare("SELECT current_price, yesterday_close, updated_at FROM stock_prices WHERE stock_code = ?");
     stmt.bind([code]);
     if (stmt.step()) {
-      const row = stmt.getAsObject() as { current_price: number; yesterday_close: number; updated_at: string };
-      if (row.updated_at === today) {
+      const row = stmt.getAsObject() as any;
+      // TTL check: only reuse if cached today
+      if (row.updated_at && row.updated_at.startsWith(today)) {
         result.set(code, { current: row.current_price, yest: row.yesterday_close });
       }
     }
-    stmt.free();
+    stmt.reset();
   }
+  stmt.free();
   return result;
 }
 
 export function setCachedPrice(code: string, name: string, current: number, yest: number): void {
   if (!db) return;
-  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
   db.run(
-    "INSERT OR REPLACE INTO stock_prices (stock_code, stock_name, current_price, yesterday_close, updated_at) VALUES (?, ?, ?, ?, ?)",
-    [code, name, current, yest, today]
+    "INSERT INTO stock_prices (stock_code, stock_name, current_price, yesterday_close, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(stock_code) DO UPDATE SET stock_name=?, current_price=?, yesterday_close=?, updated_at=?",
+    [code, name, current, yest, now, name, current, yest, now]
   );
-}
-
-export function clearPriceCache(): void {
-  if (!db) return;
-  db.run("DELETE FROM stock_prices");
-  saveToDisk();
 }

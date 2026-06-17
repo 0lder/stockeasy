@@ -338,7 +338,7 @@ export default function ConditionBuilder({ onQuery }: { onQuery: (q: string) => 
               { name: "白马股", query: "ROE大于15% 毛利率大于30% 净利润增长率大于20%" },
               { name: "破净股", query: "市净率小于1 市盈率大于0" },
             ].map(t => (
-              <Grid item xs={12} sm={6} md={4} key={t.name}>
+              <Grid size={{ xs: 12, sm: 6, md: 4 }} key={t.name}>
                 <Card 
                   sx={{ 
                     cursor: "pointer", 

@@ -7,8 +7,6 @@ export const lightTheme = createTheme({
     mode: 'light',
     primary: {
       main: '#0071e3',
-      hover: '#0077ed',
-      active: '#006edb',
     },
     secondary: {
       main: grey[700],
@@ -28,10 +26,6 @@ export const lightTheme = createTheme({
       secondary: '#86868b',
     },
     divider: '#e8e8ed',
-    action: {
-      hover: 'rgba(0, 113, 227, 0.04)',
-      selected: 'rgba(0, 113, 227, 0.08)',
-    },
   },
   typography: {
     fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif',
@@ -76,18 +70,18 @@ export const lightTheme = createTheme({
           fontWeight: 500,
           fontSize: '13px',
           padding: '6px 14px',
-        },
-        containedPrimary: {
-          backgroundColor: '#0071e3',
-          '&:hover': {
-            backgroundColor: '#0077ed',
+          '&.MuiButton-containedPrimary': {
+            backgroundColor: '#0071e3',
+            '&:hover': {
+              backgroundColor: '#0077ed',
+            },
           },
-        },
-        outlinedPrimary: {
-          borderColor: '#0071e3',
-          color: '#0071e3',
-          '&:hover': {
-            backgroundColor: 'rgba(0, 113, 227, 0.04)',
+          '&.MuiButton-outlinedPrimary': {
+            borderColor: '#0071e3',
+            color: '#0071e3',
+            '&:hover': {
+              backgroundColor: 'rgba(0, 113, 227, 0.04)',
+            },
           },
         },
       },
@@ -180,8 +174,6 @@ export const darkTheme = createTheme({
     mode: 'dark',
     primary: {
       main: '#0a84ff',
-      hover: '#409cff',
-      active: '#0071e3',
     },
     secondary: {
       main: grey[300],

@@ -1,3 +1,4 @@
+import { api } from "../api";
 import { JSX, useState, useEffect, useCallback, useRef } from "react";
 import { 
   Box, 
@@ -95,8 +96,8 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
     setLoading(true);
     try {
       const [wlRes, alertRes] = await Promise.all([
-        fetch("/api/watchlist"),
-        fetch("/api/alerts"),
+        api.get("/api/watchlist"),
+        api.get("/api/alerts"),
       ]);
       const wlData = await wlRes.json();
       setItems(wlData.items || []);
@@ -109,7 +110,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
   const refreshPrices = useCallback(async () => {
     setRefreshing(true);
     try {
-      const res = await fetch("/api/watchlist/refresh", { method: "POST" });
+      const res = await api.post("/api/watchlist/refresh");
       const data = await res.json();
       const map: Record<string, PriceInfo> = {};
       (data.data || []).forEach((p: PriceInfo) => {
@@ -124,60 +125,44 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
   const handleAdd = async () => {
     if (!code.trim() || !sname.trim()) return;
     try {
-      await fetch("/api/watchlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stock_code: code.trim(), stock_name: sname.trim(), group_name: group }),
-      });
+      await api.post("/api/watchlist", { stock_code: code.trim(), stock_name: sname.trim(), group_name: group });
       setCode(""); setSname(""); setShowAdd(false);
       fetchWatchlist();
     } catch (e) { console.error(e); }
   };
 
   const handleDelete = async (id: number) => {
-    await fetch(`/api/watchlist/${id}`, { method: "DELETE" });
+    await api.delete(`/api/watchlist/${id}`);
     fetchWatchlist();
   };
 
   const handleEditNote = async (id: number) => {
-    await fetch(`/api/watchlist/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ note: editNote }),
-    });
+    await api.put(`/api/watchlist/${id}`, { note: editNote });
     setEditingId(null);
     fetchWatchlist();
   };
 
   const handleCreateAlert = async (item: WatchItem, up: string, down: string) => {
     if (!up && !down) return;
-    await fetch("/api/alerts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    await api.post("/api/alerts", {
         stock_code: item.stock_code,
         stock_name: item.stock_name,
         threshold_up: up ? parseFloat(up) : null,
         threshold_down: down ? parseFloat(down) : null,
-      }),
-    });
-    const alertRes = await fetch("/api/alerts");
+      });
+    const alertRes = await api.get("/api/alerts");
     setAlerts(await alertRes.json());
   };
 
   const handleDeleteAlert = async (aid: number) => {
-    await fetch(`/api/alerts/${aid}`, { method: "DELETE" });
-    const alertRes = await fetch("/api/alerts");
+    await api.delete(`/api/alerts/${aid}`);
+    const alertRes = await api.get("/api/alerts");
     setAlerts(await alertRes.json());
   };
 
   const handleToggleAlert = async (aid: number, enabled: number) => {
-    await fetch(`/api/alerts/${aid}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: enabled ? 0 : 1 }),
-    });
-    const alertRes = await fetch("/api/alerts");
+    await api.put(`/api/alerts/${aid}`, { enabled: enabled ? 0 : 1 });
+    const alertRes = await api.get("/api/alerts");
     setAlerts(await alertRes.json());
   };
 
@@ -196,11 +181,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
     setDiagError("");
     setDiagResult(null);
     try {
-      const res = await fetch("/api/diagnose/" + code, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
+      const res = await api.post("/api/diagnose/" + code, { name });
       if (res.status === 400) {
         const err = await res.json();
         setDiagError(err.error || "请先在设置中配置 AI API Key");
@@ -243,7 +224,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
     <Box>
       {/* 头部操作栏 */}
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-        <Typography variant="h6" fontWeight={600}>📋 自选股</Typography>
+        <Typography variant="h6" sx={{ fontWeight: 600 }}>📋 自选股</Typography>
         <Box sx={{ display: "flex", gap: "8px" }}>
           <Tooltip title="刷新行情">
             <IconButton size="small" onClick={refreshPrices} disabled={refreshing}>
@@ -256,7 +237,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
             startIcon={<DownloadIcon />}
             onClick={async () => {
               try {
-                const res = await fetch("/api/export/watchlist");
+                const res = await api.get("/api/export/watchlist");
                 const blob = await res.blob();
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
@@ -314,7 +295,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
                 searchTimerRef.current = setTimeout(async () => {
                   setSearchLoading(true);
                   try {
-                    const res = await fetch("/api/stocks/search?q=" + encodeURIComponent(val));
+                    const res = await api.get("/api/stocks/search?q=" + encodeURIComponent(val));
                     const data = await res.json();
                     setSearchOptions(data || []);
                   } catch (_e) { setSearchOptions([]); }
@@ -376,7 +357,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
           <CircularProgress />
         </Box>
       ) : items.length === 0 ? (
-        <Typography color="text.secondary" textAlign="center" sx={{ padding: "40px" }}>
+        <Typography color="text.secondary" sx={{ textAlign: "center", padding: "40px" }}>
           还没有自选股，点击上方按钮添加
         </Typography>
       ) : (
@@ -392,7 +373,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
           return (order.indexOf(a) - order.indexOf(b));
         }).map(([gName, gItems]) => (
           <Box key={gName} sx={{ marginBottom: "16px" }}>
-            <Typography variant="subtitle2" fontWeight={600} sx={{ marginBottom: "8px", paddingLeft: "4px" }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, marginBottom: "8px", paddingLeft: "4px" }}>
               {gName}
               <Typography component="span" variant="caption" color="text.secondary" sx={{ marginLeft: "8px" }}>
                 {gItems.length} 只
@@ -417,7 +398,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
                             onClick={() => onSearch(item.stock_code)}
                             sx={{ cursor: "pointer", "&:hover": { opacity: 0.8 } }}
                           >
-                            <Typography fontWeight={600} display="inline">{item.stock_name}</Typography>
+                            <Typography sx={{ fontWeight: 600, display: "inline" }}>{item.stock_name}</Typography>
                           </Box>
                           <Typography variant="caption" color="text.secondary">{item.stock_code}</Typography>
                           {alert && (
@@ -434,7 +415,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
                       </Box>
                       <Box sx={{ textAlign: "right", minWidth: "110px" }}>
                         {price ? (
-                          <Typography variant="body2" fontWeight={600} color={color}>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }} color={color}>
                             {changeText}
                           </Typography>
                         ) : (
@@ -487,7 +468,7 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
                     {/* 告警表单 */}
                     {af?.show && (
                       <Box sx={{ marginTop: "8px", padding: "8px", bgcolor: "action.hover", borderRadius: "8px" }}>
-                        <Typography variant="caption" fontWeight={600} sx={{ marginBottom: "6px", display: "block" }}>
+                        <Typography variant="caption" sx={{ fontWeight: 600, marginBottom: "6px", display: "block" }}>
                           设置涨跌告警 - {item.stock_name}
                         </Typography>
                         <Box sx={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -536,12 +517,14 @@ export default function WatchlistPanel({ onSearch }: { onSearch: (q: string) => 
             <Box sx={{ display: "flex", flexDirection: "column", gap: "16px" }}>
               {/* 评分 */}
               <Box sx={{ textAlign: "center" }}>
-                <Typography variant="h3" fontWeight={700} sx={{
+                <Typography variant="h3" sx={{
+                  fontWeight: 700,
                   color: diagResult.score >= 7 ? "success.main" : diagResult.score >= 4 ? "warning.main" : "error.main",
                 }}>
                   {diagResult.score}/10
                 </Typography>
-                <Typography variant="body1" fontWeight={600} sx={{
+                <Typography variant="body1" sx={{
+                  fontWeight: 600,
                   color: diagResult.score >= 7 ? "success.main" : diagResult.score >= 4 ? "warning.main" : "error.main",
                 }}>
                   {diagResult.recommendation}
