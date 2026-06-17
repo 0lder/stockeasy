@@ -9,3 +9,6 @@ data/
 output/
 server/output/
 *.tsbuildinfo
+
+# CodeGraph knowledge base
+.codegraph/
